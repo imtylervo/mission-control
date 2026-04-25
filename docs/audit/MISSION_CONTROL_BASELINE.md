@@ -591,3 +591,56 @@ The injection-guard is a **lexical first-pass**, useful against naive copy-paste
 - Normalization layer **before** regex scan (not implemented): NFKC unicode normalize, base64 decode pass, comment merge, ZWSP strip.
 
 A reasonable Phase 1 follow-up to #576 is the normalization pass + a richer rule set, not just patching individual regex.
+
+## Đào Review — #576 Injection Guard Direction
+
+Reviewed after Mai commit `32d6390`.
+
+### Verdict
+
+#576 should be treated as a parser/normalization weakness, not a one-regex bug. The current guard appears useful as a lexical first pass, but it is not a robust boundary against encoded, obfuscated, or semantic variants.
+
+### Recommended Phase 1 shape
+
+Do **not** patch only the specific regex strings. Instead introduce a small preprocessing pipeline before existing regex rules:
+
+1. Unicode normalization (`NFKC`) and case folding.
+2. Strip zero-width/control format characters that do not change visible text.
+3. Decode common encodings safely where bounded:
+   - percent-encoding
+   - HTML entities
+   - base64-looking chunks under size limits
+4. Merge or scan across HTML/comment boundaries rather than per-comment only.
+5. Run existing regex rules on:
+   - original text
+   - normalized text
+   - decoded candidate text snippets
+6. Add semantic/broader synonym patterns for high-risk instruction override requests.
+
+### Safety constraints for the fix
+
+- Decoders must be bounded to avoid decompression/expansion DoS.
+- Keep original evidence text out of logs if it contains secrets or harmful payloads.
+- Return structured findings showing which transform triggered the match (`original`, `normalized`, `decoded-base64`, etc.).
+- Avoid overblocking normal code snippets by keeping severity/rule IDs precise.
+
+### Test matrix to require
+
+Add regression tests for at least:
+
+- Direct phrase baseline: should be blocked.
+- Homoglyph variant: should be blocked after normalization or flagged as suspicious.
+- Zero-width inserted phrase: should be blocked after stripping format chars.
+- Percent/HTML entity encoded variant: should be decoded/scanned.
+- Base64 encoded critical phrase: should escalate beyond warning when decoded payload is critical.
+- Multi-comment split hidden instruction: should be detected.
+- Benign base64/string examples: should not become critical unless decoded content matches critical rules.
+
+### Phase 1 priority note
+
+#576 is security-relevant but should probably follow #613 and #574 unless Day 2 finds active exploitability in a production path. Current priority remains:
+
+1. #613 doctor cache/single-flight
+2. #574 private key localStorage migration
+3. #608 gateway URL repro/fix
+4. #576 normalization guard hardening
