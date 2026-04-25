@@ -304,3 +304,40 @@ If a regression surfaces (e.g., IndexedDB corruption on some browser), rollback 
 ---
 
 **Mai's recommendation:** wait for Đào AC review (~1 day per process), Tyler approves design, then Mai opens `phase-1/pr2-device-identity-impl` from `phase-0/baseline-audit`.
+
+## 12. Đào Review — Security/AC Pass
+
+Reviewed: 2026-04-26 01:50 Australia/Melbourne
+
+### Verdict
+
+Approve design direction with Option B as primary.
+
+Option B is the right PR #2 scope because it fixes the confirmed #574 leak — raw PKCS8 private key material at rest in localStorage — without redesigning Mission Control's auth/gateway protocol. It is honest about the remaining active-XSS signing risk, which should be addressed through #576/CSP follow-up work rather than hidden inside this PR.
+
+### Answers to open questions
+
+1. **Soak window:** No soak window. Keeping `mc-device-privkey` in localStorage after successful migration defeats the purpose of the security fix. Accept re-pair as rollback cost if rollback is needed.
+
+2. **`mc-device-token` classification:** Mai should investigate during implementation because she will already be tracing `websocket.ts` and gateway protocol behavior. PR #2 must document the classification. If bearer-equivalent, open a linked follow-up issue before merge. Do not bundle token migration into PR #2 unless it is trivial and isolated.
+
+3. **E2E fixture:** Prefer runtime-generated throwaway fixture in tests. Avoid committing a static PKCS8-looking secret string if possible, even if non-sensitive. If a static fixture is unavoidable, label it loudly as test-only throwaway and ensure scanners/docs do not confuse it with real secret material.
+
+4. **Telemetry:** Out of scope for PR #2 unless Mission Control already has a lightweight local audit/event mechanism that can record non-sensitive migration outcome. Do not add a new telemetry subsystem. A local debug/audit entry with `success|fail|skipped` and no key material is acceptable if existing patterns support it.
+
+### Additional implementation notes
+
+- Migration order should be conservative: import legacy key as non-extractable → verify it can sign a small local challenge → store in IndexedDB → reload/read back if practical → only then remove `mc-device-privkey`.
+- If verification fails, do not delete legacy key blindly; instead fail closed and surface re-pair guidance. However, do not continue normal operation with raw localStorage key.
+- Keep the constant name `STORAGE_PRIVKEY_LEGACY` or equivalent to make future grep/review clear that it is migration-only.
+- Tests should assert `localStorage.setItem(STORAGE_PRIVKEY_LEGACY, ...)` only appears in test setup, not production implementation.
+
+### Final design AC additions
+
+- Add a grep/check note: production source may read/remove the legacy key but must not write it; tests may seed it.
+- Add a compatibility check that signature verification against the stored public key still passes after migration.
+- Add a user-facing error copy requirement for `DeviceIdentityUnavailableError`: clear enough to explain re-pair is needed, without mentioning raw crypto internals.
+
+### Đào recommendation to Tyler
+
+Approve design, then let Mai start `phase-1/pr2-device-identity-impl`. Require PR review before merge because this touches auth/device identity and rollback can force re-pair.
