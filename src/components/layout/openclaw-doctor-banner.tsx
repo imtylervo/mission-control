@@ -13,6 +13,9 @@ interface OpenClawDoctorStatus {
   issues: string[]
   canFix: boolean
   raw: string
+  cached?: boolean
+  ageMs?: number
+  nextRefreshAfterMs?: number
 }
 
 interface OpenClawDoctorFixProgress {
@@ -195,6 +198,13 @@ export function OpenClawDoctorBanner() {
       </div>
       {showDetails && (
         <div className={`mt-1 max-h-80 overflow-y-auto rounded-lg border px-4 py-3 text-xs whitespace-pre-wrap ${tone.frame}`}>
+          {typeof doctor.cached === 'boolean' && (
+            <div className="mb-2 text-2xs opacity-70">
+              {doctor.cached
+                ? `cached ${Math.round((doctor.ageMs ?? 0) / 1000)}s ago`
+                : 'fresh probe'}
+            </div>
+          )}
           {doctor.raw || doctor.summary}
         </div>
       )}
