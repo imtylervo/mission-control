@@ -492,3 +492,64 @@ Day-2 visual panel walk attempted via Playwright MCP. Result:
 - `npx playwright install chromium` downloaded chromium-headless-shell, but the local MCP server still expects full Chrome.
 - Code-level panel→API mapping completed without browser. Visual walk deferred — Tyler can perform manually via dev server when ready.
 - Alternative path if needed: route via Camofox (already running on this VPS) for headless walkthrough.
+
+## Đào Day 2 Review — Risk Map Skeleton
+
+Reviewed after Mai commit `94ea77b`.
+
+### Confirmed high-signal findings
+
+- #613 root cause is narrower than initial suspicion: `openclaw-doctor-banner.tsx` calls `loadDoctorStatus()` on mount with `cache: 'no-store'`; the visible interval appears to rotate fix/progress UI text, not poll doctor status. The risk is repeated mount-triggered subprocess calls during panel navigation.
+- #574 has a clearly named private key localStorage entry (`mc-device-privkey`) plus a bearer-style fallback token (`mc-device-token`). Docs must continue listing key names only, never raw values.
+- `multi-gateway` is the heaviest route consumer and should be treated as the main surface for #608 gateway reachability debugging.
+
+### Risk map — safe to change first
+
+Likely safe / isolated enough for early PRs after repro:
+
+- Add server-side cache/single-flight to `/api/openclaw/doctor` without changing UI contract.
+- Add response metadata to doctor route in a backward-compatible way.
+- Add logging/instrumentation around doctor subprocess spawn count during tests.
+- Add UI copy showing cached/fresh doctor status if metadata exists.
+- Add docs/tests for browser-reachable vs server-reachable gateway URLs after #608 repro.
+
+### Risk map — do not touch until deeper evidence
+
+High-risk areas requiring tests and rollback notes:
+
+- Device identity key generation/storage/migration (`src/lib/device-identity.ts`).
+- Any auth/RBAC/session trust model tied to `mc-device-token`.
+- Gateway URL rewrite logic in Docker/Tailscale/reverse-proxy cases before the deployment matrix is reproduced.
+- Injection guard core logic before #576 repro cases are captured.
+- Chat/session integration before #611's expected gateway-agent session model is understood.
+
+### QA evidence requirements for remaining Day 2 bugs
+
+**#608 Docker/gateway:**
+
+- Record dashboard location, gateway location, detected server URL, attempted browser URL, HTTP/WS status, and exact failure message.
+- Do not treat server-side route success as browser success.
+
+**#576 injection guard:**
+
+- Test at least: direct banned phrase, homoglyph variant, URL/base64/percent-encoded variant, and whitespace/control-character variant.
+- Record pass/block result without including harmful payloads beyond minimal sanitized samples.
+
+**#611 chat sessions:**
+
+- Record whether agents sync into MC's `agents` table.
+- Record whether chat API can address a gateway-backed OpenClaw agent by id/name.
+- Capture exact error class/message if chat fails.
+
+### Baseline finalization checklist
+
+Before Tyler reviews Phase 0:
+
+- [ ] Full test suite rerun after git identity fix.
+- [ ] Dev mode smoke recorded.
+- [ ] Top 10 panel route map complete.
+- [ ] #574 and #613 confirmed with code evidence.
+- [ ] #608 repro attempted with Docker matrix notes.
+- [ ] #576 repro attempted with sanitized payload notes.
+- [ ] #611 repro attempted with chat/session notes.
+- [ ] First 3 PR recommendations remain valid after repro.
