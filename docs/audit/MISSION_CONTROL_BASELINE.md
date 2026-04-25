@@ -389,3 +389,106 @@ Observed route files:
 - `src/app/api/sessions/transcript/gateway/route.ts`
 
 Next immediate trace target: map critical panel → API route calls for gateway-control, multi-gateway, cron-management, exec-approval, log-viewer, memory-browser.
+
+## Mai Day-2 Findings — Critical Panel → API Route Map
+
+Tracing top 6 critical panels' fetch calls:
+
+### gateway-control-panel.tsx (2 routes)
+- `GET  /api/gateways/control` — initial load
+- `POST /api/gateways/control` — control commands (start/stop/restart)
+
+### multi-gateway-panel.tsx (multiple routes — heaviest)
+- `GET  /api/gateways` — list registered gateways
+- `GET  /api/connect` — initial connect status
+- `GET  /api/gateways/discover` — auto-discover
+- `GET  /api/gateways/health/history` — recent health logs
+- `POST /api/gateways` — add gateway
+- `PATCH /api/gateways` — update
+- `DELETE /api/gateways` — remove
+- `POST /api/gateways/connect` — establish connection
+- `POST /api/gateways/health` — manual health probe
+- `POST /api/connect` — connect with parameters
+
+### cron-management-panel.tsx
+- `GET /api/cron?action=list`
+- `GET /api/scheduler`
+- `GET /api/status?action=models`
+- `POST /api/cron` — create
+- `GET /api/cron?...` — query specific job
+- `GET /api/cron?action=logs&job=...` — job logs
+- `PATCH /api/cron` — edit/enable/disable
+- `DELETE /api/cron` — remove
+
+### exec-approval-panel.tsx
+- `POST /api/exec-approvals` — approve/deny
+- `GET /api/exec-approvals?action=allowlist` — read allowlist
+- `PATCH /api/exec-approvals` — update allowlist
+
+### log-viewer-panel.tsx
+- `GET /api/logs?<filters>` — query logs
+- `GET /api/logs?action=sources` — list log sources
+- `GET /api/status` — system status
+
+### memory-browser-panel.tsx
+- `GET /api/memory?<query>` — list memory
+- `GET /api/memory?action=content&path=...` — read file
+- `GET /api/memory/links?file=...` — backlinks
+- `GET /api/memory?action=search&query=...` — search
+- `POST /api/memory` — write
+- `PATCH /api/memory` — update
+- `DELETE /api/memory` — delete
+- `GET /api/memory/health`
+- `GET /api/hermes` — Hermes plugin install state
+- `GET /api/hermes/memory` — Hermes memory data
+
+## Bug #613 Doctor Trigger — Confirmed Behavior
+
+`src/components/layout/openclaw-doctor-banner.tsx`:
+
+```tsx
+useEffect(() => {
+  void loadDoctorStatus()  // calls fetch('/api/openclaw/doctor', cache: 'no-store')
+}, [])
+```
+
+→ Banner runs `loadDoctorStatus()` on **every component mount** with empty dep array.
+
+The previously-mentioned `setInterval` at line ~69 is for **rotating progress messages during manual Fix flow only**, not for periodic polling. The actual doctor invocation is once-per-mount.
+
+**Real failure mode:** if `OpenClawDoctorBanner` is mounted in `[[...panel]]/page.tsx` (the App Router page wrapping every panel route), each navigation between panels remounts the banner → triggers `/api/openclaw/doctor` → spawns `openclaw doctor` subprocess. On a heavily-used dashboard, this multiplies fast.
+
+Fix at server route level (Đào's recommendation) is the right answer because client mount count is hard to throttle without changing UX.
+
+## Bug #574 Device Identity — Confirmed Storage Keys
+
+`src/lib/device-identity.ts`:
+
+```typescript
+// File-level constants (lines 18–22)
+const STORAGE_DEVICE_ID = 'mc-device-id'
+const STORAGE_PUBKEY = 'mc-device-pubkey'
+const STORAGE_PRIVKEY = 'mc-device-privkey'   // ⚠️ Ed25519 PRIVATE key
+const STORAGE_DEVICE_TOKEN = 'mc-device-token'
+const STORAGE_GATEWAY_URL = 'mc-gateway-url'
+```
+
+**Purpose (per file header comment):**
+> Ed25519 device identity for OpenClaw gateway protocol v3 challenge-response.
+> Generates a persistent Ed25519 key pair on first use, stores it in localStorage,
+> and signs server nonces during the WebSocket connect handshake.
+
+**Severity confirmed CRITICAL:**
+- Private signing key in `localStorage` is XSS-extractable.
+- Compromise = full impersonation of the user's device for OpenClaw gateway handshake.
+- "Falls back gracefully when Ed25519 is unavailable (older browsers) — auth-token-only mode" implies the auth-token in `STORAGE_DEVICE_TOKEN` is **also a bearer token in localStorage** — equally exposed.
+
+**Not pasted here** (per Đào's discipline): no raw key values logged in this doc.
+
+## Browser Walk Status
+
+Day-2 visual panel walk attempted via Playwright MCP. Result:
+- Playwright requested system Chrome at `/opt/google/chrome/chrome` (not installed).
+- `npx playwright install chromium` downloaded chromium-headless-shell, but the local MCP server still expects full Chrome.
+- Code-level panel→API mapping completed without browser. Visual walk deferred — Tyler can perform manually via dev server when ready.
+- Alternative path if needed: route via Camofox (already running on this VPS) for headless walkthrough.
