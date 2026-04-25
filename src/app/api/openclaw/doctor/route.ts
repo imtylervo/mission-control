@@ -6,6 +6,11 @@ import { getDatabase } from '@/lib/db'
 import { logger } from '@/lib/logger'
 import { archiveOrphanTranscriptsForStateDir } from '@/lib/openclaw-doctor-fix'
 import { parseOpenClawDoctorOutput } from '@/lib/openclaw-doctor'
+import {
+  OpenClawNotReachableError,
+  getCachedDoctorStatus,
+  setDoctorCache,
+} from '@/lib/openclaw-doctor-cache'
 
 function getCommandDetail(error: unknown): { detail: string; code: number | null } {
   const err = error as {
@@ -32,23 +37,25 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await runOpenClaw(['doctor'], { timeoutMs: 15000 })
-    return NextResponse.json(parseOpenClawDoctorOutput(`${result.stdout}\n${result.stderr}`, result.code ?? 0, {
-      stateDir: config.openclawStateDir,
-    }), {
-      headers: { 'Cache-Control': 'no-store' },
-    })
+    const result = await getCachedDoctorStatus()
+    return NextResponse.json(
+      {
+        ...result.status,
+        cached: result.cached,
+        ageMs: result.ageMs,
+        nextRefreshAfterMs: result.nextRefreshAfterMs,
+      },
+      { headers: { 'Cache-Control': 'no-store' } }
+    )
   } catch (error) {
-    const { detail, code } = getCommandDetail(error)
-    if (isMissingOpenClaw(detail)) {
-      return NextResponse.json({ error: 'OpenClaw is not installed or not reachable' }, { status: 400 })
+    if (error instanceof OpenClawNotReachableError) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
     }
-
-    return NextResponse.json(parseOpenClawDoctorOutput(detail, code ?? 1, {
-      stateDir: config.openclawStateDir,
-    }), {
-      headers: { 'Cache-Control': 'no-store' },
-    })
+    const { detail, code } = getCommandDetail(error)
+    return NextResponse.json(
+      parseOpenClawDoctorOutput(detail, code ?? 1, { stateDir: config.openclawStateDir }),
+      { headers: { 'Cache-Control': 'no-store' } }
+    )
   }
 }
 
@@ -85,6 +92,7 @@ export async function POST(request: Request) {
     const status = parseOpenClawDoctorOutput(`${postFix.stdout}\n${postFix.stderr}`, postFix.code ?? 0, {
       stateDir: config.openclawStateDir,
     })
+    setDoctorCache(status)
 
     try {
       const db = getDatabase()
