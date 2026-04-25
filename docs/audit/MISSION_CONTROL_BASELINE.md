@@ -306,3 +306,86 @@ Reviewed: 2026-04-26 00:43 Australia/Melbourne
 - Does Mission Control currently have a formal auth/RBAC model, or only device identity + local trust?
 - Which OpenClaw operations are meant to be observe-only versus executable from Mission Control?
 - Where should Tyler-specific features live: feature flags, plugins, fork-only modules, or upstreamable abstractions?
+
+## Day 2 Kickoff — Continued Audit Evidence
+
+Timestamp: 2026-04-26 00:50 Australia/Melbourne
+
+Tyler asked the team to continue immediately instead of waiting until tomorrow.
+
+### Dev server smoke
+
+- Command: `pnpm dev`
+- Result: PASS
+- Server: `http://127.0.0.1:3000`
+- Startup: Next.js 16.1.6 Turbopack ready in ~586ms on rerun.
+- `GET /setup`: HTTP 200, ~122KB HTML.
+- `GET /`: HTTP 307 redirect to `/login`.
+
+Browser automation note: direct browser navigation was blocked by current OpenClaw browser policy, so initial Day 2 UI walk is using HTTP/code inspection until browser access is available.
+
+### Panel inventory confirmed by filesystem
+
+`src/components/panels` contains 41 panel files, confirming the Day 1 discrepancy with README's “32 panels” claim.
+
+Observed panel files:
+
+- `orchestration-bar.tsx`
+- `agent-squad-panel-phase3.tsx`
+- `office-panel.tsx`
+- `system-monitor-panel.tsx`
+- `github-sync-panel.tsx`
+- `settings-panel.tsx`
+- `memory-graph.tsx`
+- `super-admin-panel.tsx`
+- `alert-rules-panel.tsx`
+- `cost-tracker-panel.tsx`
+- `documents-panel.tsx`
+- `agent-history-panel.tsx`
+- `debug-panel.tsx`
+- `security-audit-panel.tsx`
+- `chat-page-panel.tsx`
+- `session-details-panel.tsx`
+- `gateway-control-panel.tsx`
+- `agent-detail-tabs.tsx`
+- `agent-comms-panel.tsx`
+- `gateway-config-panel.tsx`
+- `pipeline-tab.tsx`
+- `local-agents-doc-panel.tsx`
+- `nodes-panel.tsx`
+- `activity-feed-panel.tsx`
+- `webhook-panel.tsx`
+- `channels-panel.tsx`
+- `multi-gateway-panel.tsx`
+- `memory-browser-panel.tsx`
+- `integrations-panel.tsx`
+- `audit-trail-panel.tsx`
+- `task-board-panel.tsx`
+- `agent-cost-panel.tsx`
+- `cron-management-panel.tsx`
+- `standup-panel.tsx`
+- `log-viewer-panel.tsx`
+- `agent-squad-panel.tsx`
+- `skills-panel.tsx`
+- `notifications-panel.tsx`
+- `token-dashboard-panel.tsx`
+- `exec-approval-panel.tsx`
+- `user-management-panel.tsx`
+
+### Gateway/OpenClaw API route inventory confirmed
+
+Observed route files:
+
+- `src/app/api/gateway-config/route.ts`
+- `src/app/api/gateways/route.ts`
+- `src/app/api/gateways/connect/route.ts`
+- `src/app/api/gateways/control/route.ts`
+- `src/app/api/gateways/discover/route.ts`
+- `src/app/api/gateways/health/route.ts`
+- `src/app/api/gateways/health/history/route.ts`
+- `src/app/api/openclaw/doctor/route.ts`
+- `src/app/api/openclaw/update/route.ts`
+- `src/app/api/openclaw/version/route.ts`
+- `src/app/api/sessions/transcript/gateway/route.ts`
+
+Next immediate trace target: map critical panel → API route calls for gateway-control, multi-gateway, cron-management, exec-approval, log-viewer, memory-browser.
