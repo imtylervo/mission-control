@@ -644,3 +644,52 @@ Add regression tests for at least:
 2. #574 private key localStorage migration
 3. #608 gateway URL repro/fix
 4. #576 normalization guard hardening
+
+## Bug #608 Reproduction Status — NOT YET REPRODUCED
+
+Honest disclosure for the baseline: bug #608 (gateway integration broken in
+distributed/containerized deployments) has **not been reproduced** during this
+Phase 0 audit window.
+
+What was done:
+- Read `src/app/api/gateways/connect/route.ts` end to end (URL building logic,
+  Tailscale Serve detection, Docker bridge IP rejection, browser-protocol
+  inference).
+- Inspected `src/lib/gateway-runtime.ts` for token/origin handling.
+- Identified the most likely fail modes (Mai's findings above).
+
+What was NOT done:
+- Bring up `docker compose up` with Mission Control in a container.
+- Run a real OpenClaw gateway in a sibling container or on host network.
+- Capture the actual failing WS URL the browser tries.
+- Test the Tailscale Serve fallback under a real Tailscale environment.
+
+**Action:** Treat the current code-only analysis as hypothesis. Bug repro is
+deferred to **early Phase 1** as part of the #608 PR work itself — the fix
+must include a reproducible Docker test matrix as acceptance criterion (see
+the AC section above). Do not claim the bug is understood until that matrix
+runs.
+
+## Phase 0 Day 2 — Closing Status (Mai)
+
+What is solid:
+- Stack confirmed, dev mode boots, smoke tests pass.
+- Architecture mapped (panels, lib, adapters, DB, API routes).
+- OpenClaw integration reality check documented.
+- #613, #574, #576 sources confirmed in code with file/line references.
+- Critical panel→API call map for top 6 panels.
+- First 3 PR candidates locked with extended acceptance criteria.
+- Risk map skeleton + safe/don't-touch lists in place.
+- 6 commits on `phase-0/baseline-audit` branch.
+
+What is intentionally deferred (and noted):
+- Visual walk via browser (Playwright MCP wants Chrome; not blocker for code review).
+- #608 Docker reproduction (deferred to Phase 1 — must include test matrix).
+- Full Playwright E2E suite run under fresh env (post-env-fix Vitest already passing).
+
+**Recommended next move (after Tyler review):**
+1. Tyler reviews this BASELINE.md and the V0_SPEC.md.
+2. If approved, open Phase 1 with PR #1 (#613 doctor cache/single-flight) since it is
+   low-risk and matches the doctor-banner mount pattern documented above.
+3. Then PR #2 (#574 device key migration) with careful test plan.
+4. Then PR #3 (#608) including Docker repro matrix.
