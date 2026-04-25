@@ -1,23 +1,31 @@
 'use client'
 
 import { createClientLogger } from '@/lib/client-logger'
+import {
+  createIndexedDbDeviceIdentityStore,
+  type DeviceIdentityStore,
+} from '@/lib/device-identity-store'
 
 const log = createClientLogger('DeviceIdentity')
 
 /**
  * Ed25519 device identity for OpenClaw gateway protocol v3 challenge-response.
  *
- * Generates a persistent Ed25519 key pair on first use, stores it in localStorage,
- * and signs server nonces during the WebSocket connect handshake.
+ * Key material lives in two places:
+ *   - non-extractable CryptoKey persisted in IndexedDB (private key, post-#574)
+ *   - localStorage (deviceId, public key, optional cached device token, gateway URL)
  *
- * Falls back gracefully when Ed25519 is unavailable (older browsers) —
- * the handshake proceeds without device identity (auth-token-only mode).
+ * Falls back gracefully when Ed25519 is unavailable (older browsers) — the
+ * handshake proceeds without device identity (auth-token-only mode). When the
+ * private key is unrecoverable but Ed25519 IS available, the caller receives a
+ * `DeviceIdentityUnavailableError` so it can prompt re-pair instead of silently
+ * downgrading.
  */
 
-// localStorage keys
+// localStorage keys (raw private key is NEVER stored here post-#574)
 const STORAGE_DEVICE_ID = 'mc-device-id'
 const STORAGE_PUBKEY = 'mc-device-pubkey'
-const STORAGE_PRIVKEY = 'mc-device-privkey'
+const STORAGE_PRIVKEY_LEGACY = 'mc-device-privkey' // migration-only: read + remove
 const STORAGE_DEVICE_TOKEN = 'mc-device-token'
 const STORAGE_GATEWAY_URL = 'mc-gateway-url'
 
@@ -27,6 +35,15 @@ export interface DeviceIdentity {
   deviceId: string
   publicKeyBase64: string
   privateKey: CryptoKey
+}
+
+export class DeviceIdentityUnavailableError extends Error {
+  constructor(reason: string) {
+    super(
+      `Mission Control could not load this browser's device identity (${reason}). Please re-pair this browser with the gateway.`
+    )
+    this.name = 'DeviceIdentityUnavailableError'
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -59,60 +76,194 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
     .join('')
 }
 
-// ── Key management ───────────────────────────────────────────────
+// ── Store wiring (DI for tests) ──────────────────────────────────
 
-async function importPrivateKey(pkcs8Bytes: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey('pkcs8', pkcs8Bytes as unknown as BufferSource, 'Ed25519', false, ['sign'])
+let storeOverride: DeviceIdentityStore | null = null
+
+/** @internal — test-only seam */
+export function __setDeviceIdentityStoreForTests(
+  store: DeviceIdentityStore | null
+): void {
+  storeOverride = store
 }
 
-async function createNewIdentity(): Promise<DeviceIdentity> {
-  const keyPair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify'])
+function getStore(): DeviceIdentityStore {
+  if (storeOverride) return storeOverride
+  return createIndexedDbDeviceIdentityStore()
+}
+
+// ── Verification helpers ─────────────────────────────────────────
+
+/**
+ * Đào's conservative migration step: prove the imported key can sign before
+ * persisting it, then prove the persisted key can sign before destroying the
+ * legacy localStorage copy.
+ */
+async function verifySignRoundtrip(privateKey: CryptoKey): Promise<void> {
+  const challenge = crypto.getRandomValues(new Uint8Array(16))
+  const sig = await crypto.subtle.sign('Ed25519', privateKey, challenge)
+  if (!sig || sig.byteLength === 0) {
+    throw new Error('verify-sign produced empty signature')
+  }
+}
+
+// ── Identity construction ────────────────────────────────────────
+
+async function generateNewIdentity(
+  store: DeviceIdentityStore
+): Promise<DeviceIdentity> {
+  // extractable=false applies to the private key. Per W3C WebCrypto, the public
+  // key from an asymmetric generateKey is always extractable, so we can still
+  // export the raw bytes needed for deviceId and the gateway pairing record.
+  const keyPair = await crypto.subtle.generateKey('Ed25519', false, [
+    'sign',
+    'verify',
+  ])
 
   const pubRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey)
-  const privPkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)
-
-  // OpenClaw expects device.id = sha256(rawPublicKey) in lowercase hex.
   const deviceId = await sha256Hex(pubRaw)
   const publicKeyBase64 = toBase64Url(pubRaw)
-  const privateKeyBase64 = toBase64Url(privPkcs8)
+
+  await verifySignRoundtrip(keyPair.privateKey)
+  await store.store(keyPair.privateKey)
+  const reload = await store.load()
+  if (!reload) {
+    throw new DeviceIdentityUnavailableError('verify-read returned null')
+  }
+  await verifySignRoundtrip(reload)
 
   localStorage.setItem(STORAGE_DEVICE_ID, deviceId)
   localStorage.setItem(STORAGE_PUBKEY, publicKeyBase64)
-  localStorage.setItem(STORAGE_PRIVKEY, privateKeyBase64)
 
   return {
     deviceId,
     publicKeyBase64,
-    privateKey: keyPair.privateKey,
+    privateKey: reload,
+  }
+}
+
+/**
+ * Đào's 5-step migration:
+ *   1. Import legacy PKCS8 as non-extractable.
+ *   2. Verify it can sign (verify-sign #1).
+ *   3. Store in IndexedDB.
+ *   4. Re-load from IndexedDB and verify it can sign (verify-read + verify-sign #2).
+ *   5. Only after all four pass: remove `mc-device-privkey` from localStorage.
+ *
+ * If ANY step fails: throw `DeviceIdentityUnavailableError`. Do NOT delete the
+ * legacy key blindly; surface re-pair guidance and let the user decide.
+ */
+async function migrateLegacyIfPresent(
+  store: DeviceIdentityStore
+): Promise<DeviceIdentity | null> {
+  const storedId = localStorage.getItem(STORAGE_DEVICE_ID)
+  const storedPub = localStorage.getItem(STORAGE_PUBKEY)
+  const legacyPriv = localStorage.getItem(STORAGE_PRIVKEY_LEGACY)
+  if (!storedId || !storedPub || !legacyPriv) return null
+
+  let imported: CryptoKey
+  try {
+    imported = await crypto.subtle.importKey(
+      'pkcs8',
+      fromBase64Url(legacyPriv) as unknown as BufferSource,
+      'Ed25519',
+      false, // extractable: false
+      ['sign']
+    )
+  } catch (err) {
+    log.warn('legacy private key unimportable, re-pair required')
+    throw new DeviceIdentityUnavailableError('legacy key import failed')
+  }
+
+  try {
+    await verifySignRoundtrip(imported)
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError('verify-sign failed for legacy key')
+  }
+
+  try {
+    await store.store(imported)
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError('IndexedDB store failed')
+  }
+
+  let persisted: CryptoKey | null
+  try {
+    persisted = await store.load()
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError('IndexedDB read-back failed')
+  }
+  if (!persisted) {
+    throw new DeviceIdentityUnavailableError('IndexedDB read-back returned null')
+  }
+
+  try {
+    await verifySignRoundtrip(persisted)
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError(
+      'verify-sign failed for persisted key'
+    )
+  }
+
+  // Only now is it safe to remove the legacy localStorage copy.
+  localStorage.removeItem(STORAGE_PRIVKEY_LEGACY)
+
+  return {
+    deviceId: storedId,
+    publicKeyBase64: storedPub,
+    privateKey: persisted,
   }
 }
 
 // ── Public API ───────────────────────────────────────────────────
 
 /**
- * Returns existing device identity from localStorage or generates a new one.
- * Throws if Ed25519 is not supported by the browser.
+ * Returns the device identity for this browser.
+ *
+ * Precedence:
+ *   1. IndexedDB CryptoKey (post-migration users).
+ *   2. Legacy localStorage `mc-device-privkey` → migrate.
+ *   3. Generate fresh keypair (new device).
+ *
+ * Throws `DeviceIdentityUnavailableError` when the private key is unrecoverable
+ * (e.g. IndexedDB blocked, key corrupted) so the caller can prompt re-pair
+ * instead of silently storing a fresh key under a stale `deviceId` or
+ * downgrading to token-only mode.
  */
 export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
+  let store: DeviceIdentityStore
+  try {
+    store = getStore()
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError('IndexedDB unavailable')
+  }
+
   const storedId = localStorage.getItem(STORAGE_DEVICE_ID)
   const storedPub = localStorage.getItem(STORAGE_PUBKEY)
-  const storedPriv = localStorage.getItem(STORAGE_PRIVKEY)
 
-  if (storedId && storedPub && storedPriv) {
-    try {
-      const privateKey = await importPrivateKey(fromBase64Url(storedPriv))
-      return {
-        deviceId: storedId,
-        publicKeyBase64: storedPub,
-        privateKey,
-      }
-    } catch {
-      // Stored key corrupted — regenerate
-      log.warn('Device identity keys corrupted, regenerating...')
+  // 1. IndexedDB has the key → fast path.
+  let idbKey: CryptoKey | null = null
+  try {
+    idbKey = await store.load()
+  } catch (err) {
+    log.warn('IndexedDB read failed, falling through to migration / fresh keypair')
+  }
+  if (idbKey && storedId && storedPub) {
+    return {
+      deviceId: storedId,
+      publicKeyBase64: storedPub,
+      privateKey: idbKey,
     }
   }
 
-  return createNewIdentity()
+  // 2. Legacy localStorage key → migrate.
+  if (localStorage.getItem(STORAGE_PRIVKEY_LEGACY)) {
+    const migrated = await migrateLegacyIfPresent(store)
+    if (migrated) return migrated
+  }
+
+  // 3. New device.
+  return generateNewIdentity(store)
 }
 
 /**
@@ -126,7 +277,11 @@ export async function signPayload(
 ): Promise<{ signature: string; signedAt: number }> {
   const encoder = new TextEncoder()
   const payloadBytes = encoder.encode(payload)
-  const signatureBuffer = await crypto.subtle.sign('Ed25519', privateKey, payloadBytes)
+  const signatureBuffer = await crypto.subtle.sign(
+    'Ed25519',
+    privateKey,
+    payloadBytes
+  )
   return {
     signature: toBase64Url(signatureBuffer),
     signedAt,
@@ -143,10 +298,21 @@ export function cacheDeviceToken(token: string): void {
   localStorage.setItem(STORAGE_DEVICE_TOKEN, token)
 }
 
-/** Removes all device identity data from localStorage (for troubleshooting). */
-export function clearDeviceIdentity(): void {
+/**
+ * Removes all device identity data from both stores (for troubleshooting and
+ * for the existing token-only fallback retry path in websocket.ts).
+ */
+export async function clearDeviceIdentity(): Promise<void> {
   localStorage.removeItem(STORAGE_DEVICE_ID)
   localStorage.removeItem(STORAGE_PUBKEY)
-  localStorage.removeItem(STORAGE_PRIVKEY)
+  localStorage.removeItem(STORAGE_PRIVKEY_LEGACY)
   localStorage.removeItem(STORAGE_DEVICE_TOKEN)
+
+  try {
+    const store = getStore()
+    await store.clear()
+  } catch (err) {
+    // Best-effort: if IndexedDB isn't reachable, there's nothing left to clear there.
+    log.warn('IndexedDB clear skipped:', err)
+  }
 }

@@ -5,6 +5,7 @@ import { useMissionControl } from '@/store'
 import { normalizeModel } from '@/lib/utils'
 import { buildGatewayPathFallbackUrls, buildGatewayWebSocketUrl } from '@/lib/gateway-url'
 import {
+  DeviceIdentityUnavailableError,
   getOrCreateDeviceIdentity,
   signPayload,
   getCachedDeviceToken,
@@ -257,7 +258,20 @@ export function useWebSocket() {
           nonce,
         }
       } catch (err) {
-        log.warn('Device identity unavailable, proceeding without:', err)
+        if (err instanceof DeviceIdentityUnavailableError) {
+          // PR #574: distinguish "key store broken" from "browser doesn't support Ed25519".
+          // Log a visible re-pair hint instead of silently downgrading without a trace.
+          log.warn('Device identity unavailable — re-pair recommended:', err.message)
+          addLog({
+            id: `device-identity-unavailable-${Date.now()}`,
+            timestamp: Date.now(),
+            level: 'warn',
+            source: 'gateway',
+            message: err.message,
+          })
+        } else {
+          log.warn('Device identity unavailable, proceeding without:', err)
+        }
       }
     }
 
@@ -426,7 +440,7 @@ export function useWebSocket() {
       if (shouldFallbackToTokenOnly) {
         tokenOnlyFallbackRef.current = true
         tokenOnlyFallbackTriedRef.current = true
-        clearDeviceIdentity()
+        void clearDeviceIdentity()
         addLog({
           id: `gateway-token-only-fallback-${Date.now()}`,
           timestamp: Date.now(),
