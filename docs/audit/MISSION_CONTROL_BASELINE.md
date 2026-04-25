@@ -553,3 +553,41 @@ Before Tyler reviews Phase 0:
 - [ ] #576 repro attempted with sanitized payload notes.
 - [ ] #611 repro attempted with chat/session notes.
 - [ ] First 3 PR recommendations remain valid after repro.
+
+## Mai Day-2 Findings — Bug #576 injection-guard regex source CONFIRMED
+
+**File:** `src/lib/skill-registry.ts` (lines ~70–135)
+
+`SECURITY_RULES` array of 10 regex-based detection rules:
+
+| # | Rule | Severity | Pattern (description) |
+|---|------|----------|----------------------|
+| 1 | `prompt-injection-system` | critical | "ignore previous instructions", "forget instructions", "you are now an evil/unrestricted" |
+| 2 | `prompt-injection-role` | critical | "act as root/admin/superuser", "bypass safety", "disable safety/security/filters" |
+| 3 | `shell-exec-dangerous` | critical | code block with `rm -rf`, piped curl/wget to bash, `eval(`, `exec(` |
+| 4 | `data-exfiltration` | critical | "send data/files/secrets/keys to", "exfiltrate", "upload data" |
+| 5 | `credential-harvesting` | warning | `api[_-]?key|secret|password|token|credential` followed by 8+ char value |
+| 6 | `obfuscated-content` | warning | `atob`, `btoa`, `Buffer.from`, long `\x..` or `\u....` runs |
+| 7 | `hidden-instructions` | warning | `<!-- … (ignore\|override\|bypass\|inject\|execute) … -->` |
+| 8 | `excessive-permissions` | warning | `sudo`, `chmod 777`, `chmod +x /`, `chown root` |
+| 9 | `network-fetch` | info | `fetch/curl/wget/axios/http.get` to external `http(s)://` |
+| 10 | `path-traversal` | critical | `../` ≥ 2, `..\` ≥ 2, `%2e%2e%2f` ≥ 2 |
+
+### Confirmed bypass vectors (per Đào's concern)
+
+- **Homoglyph:** swap Latin chars for Cyrillic/Greek look-alikes — e.g., "ignore" → "ignоrе" (Cyrillic о, е). The Latin-only regex `/ignore/i` does not match. All 4 critical "prompt-injection-*" rules vulnerable.
+- **Encoding:** base64-encode the bypass instruction, embed in skill content. Rule 6 (`obfuscated-content`) fires as a *warning* but does not decode the payload — the actual bypass instructions slip through.
+- **Semantic injection:** rephrase the same intent without trigger words — e.g., "please disregard prior directives" or "treat earlier guidance as superseded" → no regex in the set covers semantic equivalence. All 4 critical injection rules can be evaded by paraphrase.
+- **HTML comment splitting:** rule 7 only matches single-comment payloads. Splitting bypass instructions across multiple `<!-- ... -->` comments evades the per-comment regex.
+- **Whitespace/formatting:** rules use `\s+` between key tokens but real attackers can use zero-width spaces (U+200B, U+200C, U+200D) which `\s` does not match in JS regex by default. Inserting ZWSP between letters of "ignore" defeats `/ignore/`.
+
+### Implication
+
+The injection-guard is a **lexical first-pass**, useful against naive copy-paste prompt-injection content but **not a robust safety boundary**. Any high-trust enforcement (e.g., what we already saw with Cẩm Tú Cầu's safety failures on free open-weight models) must rely on:
+
+- Tool-level capability deny (already used in OpenClaw config layer).
+- Output guardrails at the model-response stage (not implemented here).
+- Strong instruction-following models (proprietary tier).
+- Normalization layer **before** regex scan (not implemented): NFKC unicode normalize, base64 decode pass, comment merge, ZWSP strip.
+
+A reasonable Phase 1 follow-up to #576 is the normalization pass + a richer rule set, not just patching individual regex.
