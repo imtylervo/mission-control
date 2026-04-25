@@ -264,3 +264,45 @@ Likely owner: `src/lib/security-scan.ts` or `src/lib/agent-evals.ts`. Bypass via
 - First 3 PR candidates locked with acceptance criteria
 - Pending Day 1: panel deep walk top 10, dev mode smoke
 - Pending Day 2: 41 panel light walk, 5 bug repro, full Vitest+Playwright run, risk map
+
+## Đào Review Notes — Spec/Acceptance Pass
+
+Reviewed: 2026-04-26 00:43 Australia/Melbourne
+
+### Baseline quality check
+
+- The baseline now separates shallow adapter behavior from real OpenClaw gateway integration. This prevents the team from patching `src/lib/adapters/openclaw.ts` prematurely.
+- The first 3 PR candidates are correctly ordered by risk/value: #613 first for low-risk ops stabilization, #574 second for critical security with migration complexity, #608 third after Docker/browser-reachability repro.
+- Acceptance criteria are concrete enough to support Quỳnh-style QA later.
+
+### Additional acceptance criteria to carry forward
+
+**General PR rule:** every Phase 1 PR should include:
+
+- Repro evidence before fix or a documented “not reproducible” result.
+- A small regression test where practical.
+- No raw secrets/tokens in logs, screenshots, test fixtures, or docs.
+- Rollback note if the fix touches auth, device identity, gateway connection, or subprocess execution.
+
+**#613 doctor route:**
+
+- Add a single-flight test or instrumentation note proving concurrent calls collapse into one subprocess.
+- Expose response metadata in a backwards-compatible way; clients that ignore `cached/ageMs/nextRefreshAfterMs` should still work.
+
+**#574 device identity:**
+
+- Add a threat-model note: XSS/localStorage/private-key exfiltration is the risk being closed.
+- Confirm whether `STORAGE_DEVICE_TOKEN` is bearer-equivalent. If yes, open a follow-up issue even if it is not fixed in the same PR.
+- Migration should be idempotent: repeated launch must not recreate or preserve `STORAGE_PRIVKEY`.
+
+**#608 gateway URL:**
+
+- Test should distinguish server reachability from browser reachability. A server-side `fetch/ws` success alone is not enough.
+- UI copy should avoid implying internal Docker/Tailscale addresses are directly browser-safe.
+
+### Remaining open questions for Day 2
+
+- Which of the 41 detected panels are production-facing vs dev/demo/internal?
+- Does Mission Control currently have a formal auth/RBAC model, or only device identity + local trust?
+- Which OpenClaw operations are meant to be observe-only versus executable from Mission Control?
+- Where should Tyler-specific features live: feature flags, plugins, fork-only modules, or upstreamable abstractions?
