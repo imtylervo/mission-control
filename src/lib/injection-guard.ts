@@ -210,6 +210,68 @@ export function decodeBase64Chunks(input: string): string[] {
 }
 
 /**
+ * Apply ROT13 to ASCII letters in a string. Non-letters and non-ASCII
+ * characters pass through unchanged. Pure utility used by decodeRot13.
+ */
+function applyRot13(input: string): string {
+  let out = ''
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i)
+    if (c >= 0x41 && c <= 0x5A) {
+      // 'A'..'Z'
+      out += String.fromCharCode(((c - 0x41 + 13) % 26) + 0x41)
+    } else if (c >= 0x61 && c <= 0x7A) {
+      // 'a'..'z'
+      out += String.fromCharCode(((c - 0x61 + 13) % 26) + 0x61)
+    } else {
+      out += input[i]
+    }
+  }
+  return out
+}
+
+/**
+ * Bigram patterns used as activation evidence for the ROT13 decoder.
+ * If post-ROT13 input contains any of these whole-word matches, we treat
+ * the input as plausibly ROT13-encoded English and emit the decoded form.
+ *
+ * Conservative on purpose — random English text rotated to ROT13 will not
+ * accidentally surface these unless the original WAS plaintext English with
+ * one of these words. False positives on legitimate English content are
+ * acceptable: they decode the user's text into gibberish, which the
+ * existing rule patterns will not match.
+ */
+const ROT13_TRIGGER_BIGRAMS = /\b(?:the|into|please|ignore)\b/i
+
+/**
+ * Decode a ROT13-rotated string. Whole-string transform.
+ *
+ * Activation gate (conservative):
+ *   1. input must contain >= ROT13_MIN_LETTERS ASCII letters
+ *   2. post-ROT13 output must contain at least one trigger bigram
+ *      (`the`, `into`, `please`, `ignore`)
+ *
+ * Returns `[rotated]` only when both gates pass; otherwise `[]`. This
+ * avoids generating noise candidates from random English prose, where
+ * post-ROT13 text is gibberish and matches no bigram.
+ *
+ * Pure, never throws.
+ */
+export function decodeRot13(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  let letterCount = 0
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i)
+    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)) letterCount++
+    if (letterCount >= ROT13_MIN_LETTERS) break
+  }
+  if (letterCount < ROT13_MIN_LETTERS) return []
+  const rotated = applyRot13(input)
+  if (!ROT13_TRIGGER_BIGRAMS.test(rotated)) return []
+  return [rotated]
+}
+
+/**
  * Hardcoded small map of common named HTML entities. Intentionally limited
  * to the ~25 most commonly seen ones — we do NOT pull a full HTML parser
  * or dependency. Unknown entities are left untouched in the output.
