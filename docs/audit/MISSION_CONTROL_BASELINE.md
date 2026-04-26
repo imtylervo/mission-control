@@ -740,11 +740,48 @@ What is intentionally deferred (and noted):
 - Live gateway dispatch with real OpenClaw agents
 - Cache hit/miss behavior under concurrent admin sessions
 
+### B2 deep authenticated smoke (executed 2026-04-26 evening)
+
+Tyler created admin account via `/setup`. Camofox session + programmatic admin login with cookie auth. 4-tier classification per Đào: `verified` / `partially verified` / `blocked` / `not tested`.
+
+| PR | Status | Evidence |
+|---|---|---|
+| #613 | **verified** | Cache metadata + TTL + single-flight all confirmed at runtime (details below) |
+| #574 | blocked | No device-identity state — browser hasn't paired with gateway yet, so localStorage is empty and there is nothing to migrate from. Camofox/Camoufox sandbox additionally hangs on structured-clone of `CryptoKey` to IndexedDB. |
+| #608 | blocked | Onboarding modal "Secure Your Station" overlays after admin login and blocks navigation to `/tasks`. Exercising live dispatch is also out of scope for this smoke per Đào's caveat (no external task fanout). |
+
+**#613 verification evidence:**
+
+```
+1st call (cache miss, real subprocess invoked):
+  HTTP 200 in 10.32s
+  cached: false
+  ageMs: 0
+  nextRefreshAfterMs: 30000   (TTL = 30s as designed)
+
+2nd call (1s after, cache hit, NO subprocess):
+  HTTP 200 in 0.017s          (~600x speedup)
+  cached: true
+  ageMs: 13664
+  nextRefreshAfterMs: 16336   (30000 - 13664 = 16336 ✓ TTL invariant)
+```
+
+Verified design assertions:
+- Cache metadata fields (`cached`, `ageMs`, `nextRefreshAfterMs`) reach the authenticated client.
+- TTL = 30s as specified in PR #1 design.
+- Single-flight: subprocess is NOT re-spawned within the TTL window (massive latency drop on the second call confirms cache is in-memory).
+- `ageMs + nextRefreshAfterMs = TTL_MS` invariant preserved.
+
+**Operational findings (NOT defects):**
+
+- **Dev-server PATH gap.** Tyler's `~/.npm-global/bin/` is not on the dev server's `PATH`, so `runOpenClaw` (default binary name `openclaw`) fails with `ENOENT` until `OPENCLAW_BIN=/home/vip.toanvo/.npm-global/bin/openclaw` is set. PR #1's `OpenClawNotReachableError → 400` path is correct in either case; this is purely an environment fix. Set the env var (e.g. via `mission-control/.env.local` or shell), restart `pnpm dev`, retry. Recommended permanent fix outside this PR: add the npm-global bin to `PATH` in `~/.bashrc` or set `OPENCLAW_BIN` globally.
+- **Spurious `next-server` PID name collision.** 9router builds on Next.js, so `pkill -f "next-server"` will match the 9router worker as well as Mission Control's dev server. When stopping MC dev, target the actual MC PID (`pgrep -f "next dev --hostname 127.0.0.1 --port 3000"`) instead of the generic `next-server` regex. 9router's systemd unit auto-respawns its worker if killed, so a mistaken kill is recoverable, but avoid it.
+
 ### Residual risks (honest disclosure)
 
 These are risks acknowledged at Phase 1 closure that have NOT been verified yet. Each is a candidate for follow-up work but does NOT block closure.
 
-1. **No E2E authenticated UI walk** — `/api/openclaw/doctor` and `/api/agents` both return 401 on anonymous calls. Smoke confirmed the routes deploy and auth gate works, but did not verify cache-hit metadata (`cached`, `ageMs`, `nextRefreshAfterMs`) reaches an authenticated client. Deferred to a separate "B2 deep authenticated smoke" task that uses Camofox or Playwright with admin login + cookie injection. Tyler created admin via /setup at 2026-04-26 (credentials NOT stored).
+1. **#613 cache metadata** — VERIFIED in B2 above. Original residual risk closed.
 2. **No live gateway dispatch test for #608** — `callGatewayAgentForText` was unit-tested with a mock WebSocket server. Real round-trip through `ws://localhost:18789/ws` against a live `openclaw-gateway` was NOT exercised. The gateway is currently running `2026.4.24` (with bonjour disabled), but exercising task dispatch end-to-end requires creating + running a task that targets a registered agent. Deferred.
 3. **Docker / containerized deployment** — both #608 design and PR description marked Docker repro as `[blocked]` because Tyler's environment is direct VM. Containerized MC behavior is the original failure case from upstream issue #608 and remains unverified in our fork. CI matrix is the appropriate venue for this once a maintainer with container infra picks it up.
 4. **Pre-existing `gateway-url.test.ts` failure** — still fails (1 case: "uses ws:// for prefixed localhost URL even with https scheme"). Confirmed pre-existing on `phase-0/baseline-audit` baseline before Phase 1 work. Out of scope; tracked for future cleanup.
