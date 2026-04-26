@@ -42,6 +42,110 @@ export interface GuardOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Constants (PR #4 — Phase 2 #576 hardening, Layer 1)
+// ---------------------------------------------------------------------------
+
+/** Maximum input length scanned. Existing behavior, unchanged. */
+export const MAX_LENGTH = 50_000
+
+/** Maximum total candidates (raw + normalized + decoded) per scan. */
+export const MAX_CANDIDATES = 8
+
+/** Maximum recursion depth for decode passes. */
+export const MAX_DEPTH = 2
+
+/** Upper bound on a single base64 chunk we will attempt to decode. */
+export const MAX_B64_CHUNK = 1024
+
+/** Lower bound — base64 chunks shorter than this are ignored as noise. */
+export const MIN_B64_CHUNK = 16
+
+/** ROT13 decoder requires at least this many ASCII letters before activating. */
+export const ROT13_MIN_LETTERS = 8
+
+// ---------------------------------------------------------------------------
+// Normalization helpers (PR #4 commit 1)
+//
+// Deterministic transform applied to user input before regex scanning.
+// Pure functions, no I/O, no logging.
+// ---------------------------------------------------------------------------
+
+/** Strip null bytes and C0/C1 control characters except \t \n \r. */
+export function stripControlChars(input: string): string {
+  // C0 (U+0000–U+001F) minus tab/LF/CR + DEL (U+007F) + C1 (U+0080–U+009F)
+  return input.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u0080-\u009F]/g, '')
+}
+
+/** Strip zero-width / format characters: ZWSP, ZWNJ, ZWJ, WJ, BOM. */
+export function stripZeroWidth(input: string): string {
+  return input.replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
+}
+
+/**
+ * Conservative confusables fold. ~60 hand-curated entries from the most
+ * commonly abused Cyrillic/Greek/fullwidth substitutions. Intentionally
+ * small to avoid pulling Unicode TR39 and to bound false-positive risk.
+ *
+ * Only folds *visible* look-alikes that share the same canonical glyph
+ * shape — does NOT fold semantically distinct letters even if visually similar.
+ */
+const CONFUSABLES_MAP: Record<string, string> = {
+  // Cyrillic lowercase → Latin
+  'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p',
+  'с': 'c', 'у': 'y', 'х': 'x', 'і': 'i',
+  'ј': 'j', 'ѕ': 's',
+  // Cyrillic uppercase → Latin
+  'А': 'A', 'Е': 'E', 'О': 'O', 'Р': 'P',
+  'С': 'C', 'Х': 'X', 'І': 'I', 'Ј': 'J',
+  'Ѕ': 'S', 'В': 'B', 'Н': 'H', 'К': 'K',
+  'М': 'M', 'Т': 'T',
+  // Greek lowercase → Latin
+  'α': 'a', 'ο': 'o', 'ρ': 'p', 'ν': 'v',
+  'υ': 'u', 'χ': 'x',
+  // Greek uppercase → Latin
+  'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Ζ': 'Z',
+  'Η': 'H', 'Ι': 'I', 'Κ': 'K', 'Μ': 'M',
+  'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T',
+  'Υ': 'Y', 'Χ': 'X',
+  // Mathematical / fullwidth duplicates not covered cleanly by NFKC
+  'ſ': 's', // long-s
+}
+
+/** Apply confusables map character-by-character. */
+export function applyConfusablesFold(input: string): string {
+  let out = ''
+  for (const ch of input) {
+    out += CONFUSABLES_MAP[ch] ?? ch
+  }
+  return out
+}
+
+/**
+ * Normalize an input string for safer regex scanning.
+ *
+ * Order is deterministic and tested:
+ *   1. strip null + control chars
+ *   2. strip zero-width / format chars
+ *   3. NFKC Unicode normalization (folds fullwidth and compatibility forms)
+ *   4. confusables fold (Cyrillic/Greek look-alikes → Latin)
+ *
+ * This is a PURE function. It does not log, throw, or mutate input.
+ * Empty / non-string input returns ''.
+ *
+ * Comments-as-obfuscation (HTML/JS comment splitting) is intentionally NOT
+ * handled here. See docs/audit/PR4_INJECTION_GUARD_DESIGN.md §5.7 — that
+ * surface needs a real parser and is deferred to a future Layer 2 PR.
+ */
+export function normalize(input: string): string {
+  if (!input || typeof input !== 'string') return ''
+  let s = stripControlChars(input)
+  s = stripZeroWidth(s)
+  s = s.normalize('NFKC')
+  s = applyConfusablesFold(s)
+  return s
+}
+
+// ---------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------
 
