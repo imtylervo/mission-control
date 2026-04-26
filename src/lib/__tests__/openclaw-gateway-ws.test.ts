@@ -23,9 +23,13 @@ import {
 
 type Listener = (...args: any[]) => void
 
+interface MockWebSocketLike {
+  emit(event: string, ...args: any[]): void
+}
+
 interface MockWsBehaviour {
   /** Called when the client sends a frame. Return null to send no reply. */
-  onSend?: (frame: any, ws: MockWebSocket) => any | any[] | null
+  onSend?: (frame: any, ws: MockWebSocketLike) => any | any[] | null
   /** If set, fail the open event after delayMs to simulate connection error. */
   failOpen?: { delayMs: number; message: string }
   /** Track headers passed to the ctor (for auth assertions). */
