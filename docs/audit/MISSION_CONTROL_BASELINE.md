@@ -812,7 +812,7 @@ Mission Control on this branch is **NOT production-ready** in the upstream-merge
 |---|---|---|---|
 | 1 | Open follow-up issue draft for `mc-device-token` gateway audit upstream | Tyler decides timing | Low |
 | 2 | If upstream PR #607 lands, sync our branch with upstream main and verify our 3 PRs still apply cleanly | Mai + Đào | Medium (potential merge conflict) |
-| 3 | "B2 deep authenticated smoke" — Camofox/Playwright login + verify each PR's runtime behavior under real traffic | Mai write, Đào review | Low |
+| 3 | "B2 follow-up smoke" — unblock #574 device pairing / #608 onboarding+safe dispatch only if Tyler wants deeper runtime proof | Mai write, Đào review | Low–Medium |
 | 4 | "Generic gateway WS migration" PR — migrate `channels/route.ts`, `nodes/route.ts`, `sessions/route.ts` callers to `callOpenClawGatewayWS` | Mai + Đào | Medium |
 | 5 | Phase 2 PR sequence — pick from baseline `Bug Ownership Map` (#576 injection-guard hardening, #611 chat session, ...) | Tyler chooses target | Varies |
 
