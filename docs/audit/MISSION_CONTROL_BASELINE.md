@@ -784,7 +784,7 @@ This means: if Mission Control is NOT migrating localStorage privkey → Indexed
 - Is `tokenOnlyFallbackRef.current` stuck `true` from an earlier session — short-circuiting the device-identity branch?
 - Is the browser's secure context / `window.crypto.subtle` available so `getOrCreateDeviceIdentity()` can complete?
 
-**#574 PR #5 sub-task 5a status:** PIVOTED. Path B (parallel test gateway in "device mode") is CANCELLED — that mode does not exist and would not change behavior even if it did. The verification work moves to browser-side inspection of MC's existing 18789 connection. The draft script `docs/audit/PR5_PATH_B_TEST_GATEWAY.sh` is retained as a reference for future parallel-env work that legitimately needs an isolated MC profile, but it is NOT a path to verifying #574.
+**#574 PR #5 sub-task 5a status:** PIVOTED. Path B (parallel test gateway in "device mode") is CANCELLED — that mode does not exist and would not change behavior even if it did. The verification work moves to browser-side inspection of MC's existing 18789 connection. The reference doc `docs/audit/PR5_PATH_B_REFERENCE.md` is retained for future parallel-env work that legitimately needs an isolated MC profile, but it is NOT a path to verifying #574.
 
 **Operational findings (NOT defects):**
 
