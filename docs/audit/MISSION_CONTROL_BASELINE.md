@@ -775,6 +775,17 @@ Verified design assertions:
 
 **#574 refined blocker note:** Mission Control only calls `getOrCreateDeviceIdentity()` when the gateway sends a device-auth `nonce` and the client is not in token-only fallback. Tyler's current gateway/onboarding path says device auth is disabled, so no `mc-device-*` localStorage keys are expected. Do not describe the token-only path as “safe” without caveat; localStorage token risk depends on gateway-side acceptance behavior and remains a follow-up audit item.
 
+**#574 PR #5 sub-task 5a finding (2026-04-27, after Đào gateway-source inspection):** the original BLOCKED reason was **incorrect**. The gateway emits `connect.challenge` with a `randomUUID()` nonce **unconditionally** as soon as the WebSocket opens, regardless of `gateway.auth.mode`. Auth-mode values (`none | token | password | trusted-proxy`) control bearer-credential validation only; they do NOT gate the device-auth challenge frame.
+
+This means: if Mission Control is NOT migrating localStorage privkey → IndexedDB despite a live token-mode gateway, the bug is on the **client side**, not the gateway side. The fix focus shifts away from "switch the gateway to device mode" (which is meaningless — there is no such mode) toward inspecting the MC websocket client:
+
+- Does MC actually receive the `event/connect.challenge` frame? (Network/DevTools WS log)
+- Does `handleGatewayFrame` invoke `sendConnectHandshake(ws, frame.payload?.nonce)` as the code path suggests?
+- Is `tokenOnlyFallbackRef.current` stuck `true` from an earlier session — short-circuiting the device-identity branch?
+- Is the browser's secure context / `window.crypto.subtle` available so `getOrCreateDeviceIdentity()` can complete?
+
+**#574 PR #5 sub-task 5a status:** PIVOTED. Path B (parallel test gateway in "device mode") is CANCELLED — that mode does not exist and would not change behavior even if it did. The verification work moves to browser-side inspection of MC's existing 18789 connection. The draft script `docs/audit/PR5_PATH_B_TEST_GATEWAY.sh` is retained as a reference for future parallel-env work that legitimately needs an isolated MC profile, but it is NOT a path to verifying #574.
+
 **Operational findings (NOT defects):**
 
 - **Dev-server PATH gap.** Tyler's `~/.npm-global/bin/` is not on the dev server's `PATH`, so `runOpenClaw` (default binary name `openclaw`) fails with `ENOENT` until `OPENCLAW_BIN=/home/vip.toanvo/.npm-global/bin/openclaw` is set. PR #1's `OpenClawNotReachableError → 400` path is correct in either case; this is purely an environment fix. Set the env var (e.g. via `mission-control/.env.local` or shell), restart `pnpm dev`, retry. Recommended permanent fix outside this PR: add the npm-global bin to `PATH` in `~/.bashrc` or set `OPENCLAW_BIN` globally.
