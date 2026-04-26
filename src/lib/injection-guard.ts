@@ -210,6 +210,36 @@ export function decodeBase64Chunks(input: string): string[] {
 }
 
 /**
+ * Decode a percent-encoded string with `decodeURIComponent`. Single-shot,
+ * whole-string transform (not chunked like base64).
+ *
+ * Returns `[decoded]` if:
+ *   - input contains at least one `%[0-9A-Fa-f]{2}` triple
+ *   - `decodeURIComponent` succeeds without throwing
+ *   - the decoded form actually differs from the input
+ *
+ * Returns `[]` (silently) on any of:
+ *   - input has no `%XX` triples
+ *   - any malformed escape (e.g. `%ZZ`, lone `%`) causes `decodeURIComponent`
+ *     to throw — caught, dropped
+ *   - decoded output is identical to input (no transformation occurred)
+ *
+ * Pure, fail-soft. Never throws.
+ */
+export function decodePercent(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  if (!/%[0-9A-Fa-f]{2}/.test(input)) return []
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(input)
+  } catch {
+    return []
+  }
+  if (decoded === input) return []
+  return [decoded]
+}
+
+/**
  * Normalize an input string for safer regex scanning.
  *
  * Order is deterministic and tested:
