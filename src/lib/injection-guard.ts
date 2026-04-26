@@ -25,6 +25,20 @@ export interface InjectionMatch {
   rule: string
   description: string
   matched: string
+  /**
+   * Optional provenance: which transforms were applied to the input
+   * before this rule fired. Undefined for matches on the raw input
+   * (zero-change for callers that ignore this field).
+   *
+   * Examples:
+   *   - undefined          → matched the raw input directly
+   *   - ['normalize']      → matched after Unicode normalization
+   *   - ['normalize', 'base64'] → matched after normalize then base64 decode
+   *
+   * Added in PR #4 commit 3 (issue #576 Layer 1 hardening). Optional by
+   * design so existing callers do not break.
+   */
+  transformChain?: string[]
 }
 
 export interface InjectionReport {
@@ -584,11 +598,103 @@ const RULES: InjectionRule[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// Candidate set builder (PR #4 commit 3)
+//
+// A "candidate" is a string the scanner runs all rules against. Building
+// the candidate set is bounded by MAX_CANDIDATES so adversarial inputs
+// cannot fan out into unbounded scan work.
+// ---------------------------------------------------------------------------
+
+interface ScanCandidate {
+  text: string
+  /** Transforms applied to the raw input to produce this candidate. */
+  chain: string[]
+}
+
+/**
+ * Build the bounded candidate set for a scan.
+ *
+ * Order:
+ *   1. raw input                   chain = []
+ *   2. normalize(input)            chain = ['normalize']  (only if differs)
+ *   3. each decoder applied to (1) chain = [decoder]      (only if non-empty)
+ *   4. each decoder applied to (2) chain = ['normalize', decoder]
+ *
+ * Bounded by MAX_CANDIDATES total (raw + norm + decoded). Decoders that
+ * produce duplicates of an existing candidate are dropped via the seen set.
+ *
+ * Pure: no I/O, no logging. The decoder helpers themselves are fail-soft
+ * and never throw, so this function never throws either.
+ */
+function buildCandidateSet(input: string): ScanCandidate[] {
+  const cands: ScanCandidate[] = []
+  const seen = new Set<string>()
+
+  const push = (text: string, chain: string[]): boolean => {
+    if (cands.length >= MAX_CANDIDATES) return false
+    if (seen.has(text)) return false
+    seen.add(text)
+    cands.push({ text, chain })
+    return true
+  }
+
+  // 1. raw
+  push(input, [])
+
+  // 2. normalize
+  const norm = normalize(input)
+  if (norm) push(norm, ['normalize'])
+
+  // 3. decoders applied to a base candidate
+  const applyDecoders = (base: ScanCandidate) => {
+    if (cands.length >= MAX_CANDIDATES) return
+    for (const dec of decoderRoster) {
+      if (cands.length >= MAX_CANDIDATES) break
+      const out = dec.fn(base.text)
+      for (const decoded of out) {
+        if (cands.length >= MAX_CANDIDATES) break
+        push(decoded, [...base.chain, dec.name])
+      }
+    }
+  }
+
+  // Iterate over a snapshot — applyDecoders may push new candidates but
+  // we deliberately don't re-decode them in this pass (depth=1 from raw,
+  // depth=2 from normalized).
+  const snapshot = cands.slice()
+  for (const base of snapshot) {
+    applyDecoders(base)
+  }
+
+  return cands
+}
+
+const decoderRoster: ReadonlyArray<{ name: string; fn: (s: string) => string[] }> = [
+  { name: 'base64', fn: decodeBase64Chunks },
+  { name: 'percent', fn: decodePercent },
+  { name: 'html', fn: decodeHtmlEntities },
+  { name: 'rot13', fn: decodeRot13 },
+]
+
+// ---------------------------------------------------------------------------
 // Core scanner
 // ---------------------------------------------------------------------------
 
 /**
- * Scan a string for prompt injection, command injection, and exfiltration patterns.
+ * Scan a string for prompt injection, command injection, and exfiltration
+ * patterns.
+ *
+ * Behavior (PR #4 commit 3 hardening):
+ *   - Builds a bounded candidate set: raw + normalize(input) + bounded
+ *     decode passes (base64, percent, HTML entity, ROT13).
+ *   - Runs every applicable rule against every candidate.
+ *   - Findings on transformed candidates carry a `transformChain` array
+ *     showing the provenance (e.g. ['normalize', 'base64']). Findings on
+ *     the raw input have `transformChain` undefined — full backward
+ *     compatibility for existing callers.
+ *   - Dedup: same (rule, matched) reported once. Prefer the candidate
+ *     with the shortest transformChain, so raw matches win over
+ *     normalized matches win over decoded matches.
  *
  * Returns a report with `safe: true` if no actionable matches were found.
  */
@@ -601,23 +707,41 @@ export function scanForInjection(input: string, options: GuardOptions = {}): Inj
 
   // Truncate overly long input to prevent ReDoS
   const text = input.length > maxLength ? input.slice(0, maxLength) : input
-  const matches: InjectionMatch[] = []
+  const candidates = buildCandidateSet(text)
 
-  for (const rule of RULES) {
-    if (!rule.contexts.includes(context)) continue
+  // Map keyed by `${rule}|${matched}` -> finding with shortest chain so far.
+  const dedup = new Map<string, InjectionMatch>()
 
-    const match = rule.pattern.exec(text)
-    if (match) {
-      matches.push({
+  for (const cand of candidates) {
+    for (const rule of RULES) {
+      if (!rule.contexts.includes(context)) continue
+
+      const m = rule.pattern.exec(cand.text)
+      if (!m) continue
+
+      const matched = m[0].slice(0, 80)
+      const key = `${rule.rule}|${matched}`
+      const existing = dedup.get(key)
+      if (existing && (existing.transformChain?.length ?? 0) <= cand.chain.length) {
+        // already have a shorter (or equal) provenance for this finding
+        continue
+      }
+
+      const finding: InjectionMatch = {
         category: rule.category,
         severity: rule.severity,
         rule: rule.rule,
         description: rule.description,
-        matched: match[0].slice(0, 80),
-      })
+        matched,
+      }
+      if (cand.chain.length > 0) {
+        finding.transformChain = cand.chain
+      }
+      dedup.set(key, finding)
     }
   }
 
+  const matches = Array.from(dedup.values())
   const unsafe = matches.some(
     m => m.severity === 'critical' || (!criticalOnly && m.severity === 'warning')
   )
