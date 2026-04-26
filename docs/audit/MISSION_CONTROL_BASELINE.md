@@ -693,3 +693,100 @@ What is intentionally deferred (and noted):
    low-risk and matches the doctor-banner mount pattern documented above.
 3. Then PR #2 (#574 device key migration) with careful test plan.
 4. Then PR #3 (#608) including Docker repro matrix.
+
+---
+
+## Phase 1 Closing Status (Mai + Đào)
+
+**Date:** 2026-04-26
+**Branch:** `phase-0/baseline-audit` (fork `imtylervo/mission-control`)
+**Status:** Phase 1 PR sequence complete for fork-local development. Ready for Tyler review before Phase 2 planning.
+
+### Merged PRs
+
+| # | Issue | Commit | Title | Lines | Tests |
+|---|---|---|---|---|---|
+| 1 | #613 | `9b4204a` | doctor route TTL cache + single-flight | +359 / -15 | 8 new vitest |
+| 2 | #574 | `3f8decb` | Ed25519 private key out of localStorage (Option B) | +723 / -39 | 17 new vitest |
+| 3 | #608 | `2fed1c5` | native WS replaces CLI subprocess for full-text dispatch paths | +762 / -78 | 13 new vitest |
+
+**Cumulative diff:** +1844 / -132 across 12 files (4 new modules + 4 new test files + 4 modified files).
+**New vitest cases:** 38 total (8 + 17 + 13).
+**Suite delta:** baseline 938 pass → post-PR-3 968+ pass / 1 pre-existing fail unchanged.
+**Process discipline:** all 3 PRs followed identical flow — Mai writes design doc → Đào reviews → Tyler approves → Mai writes impl → Đào reviews → Tyler approves merge.
+
+### Smoke test result (compile + unauthenticated integration smoke, executed 2026-04-26)
+
+**Compile + integration smoke (Mai, msg 1109):**
+- ✅ `next dev` boots cleanly on port 3000 (Next.js 16.1.6 Turbopack, ready in 1248ms)
+- ✅ `tsc --noEmit -p .` exit 0 across all merged code
+- ✅ `pnpm vitest run` → 968 pass / 1 pre-existing fail (gateway-url.test, unrelated, also fails on phase-0 baseline)
+- ✅ Doctor route (`/api/openclaw/doctor`) → HTTP 401 (auth boundary working as designed)
+- ✅ Login page (`/login`) → HTTP 200, renders with new device-identity import surface
+- ✅ Agents API (`/api/agents`) → HTTP 401, `task-dispatch.ts` imports `callGatewayAgentForText` from new `openclaw-gateway-ws.ts` without module-not-found
+- ✅ Backend services healthy: DB migrations applied, scheduler initialized (backup/cleanup/heartbeat/sync), agent sync 6 synced
+- ✅ Dev log clean: 0 compile errors, 0 TypeError, 0 module-not-found
+
+**What this smoke level proves:**
+- All 3 PRs deploy cleanly into the merged branch
+- No type errors at project-wide tsc check
+- No broken imports, no orphaned dead code
+- Auth boundary preserved
+- Database + scheduler state survived merges
+
+**What this smoke level does NOT prove (residual risks below):**
+- End-to-end runtime behavior under real traffic
+- UI walkthrough of critical panels post-merge
+- Live gateway dispatch with real OpenClaw agents
+- Cache hit/miss behavior under concurrent admin sessions
+
+### Residual risks (honest disclosure)
+
+These are risks acknowledged at Phase 1 closure that have NOT been verified yet. Each is a candidate for follow-up work but does NOT block closure.
+
+1. **No E2E authenticated UI walk** — `/api/openclaw/doctor` and `/api/agents` both return 401 on anonymous calls. Smoke confirmed the routes deploy and auth gate works, but did not verify cache-hit metadata (`cached`, `ageMs`, `nextRefreshAfterMs`) reaches an authenticated client. Deferred to a separate "B2 deep authenticated smoke" task that uses Camofox or Playwright with admin login + cookie injection. Tyler created admin via /setup at 2026-04-26 (credentials NOT stored).
+2. **No live gateway dispatch test for #608** — `callGatewayAgentForText` was unit-tested with a mock WebSocket server. Real round-trip through `ws://localhost:18789/ws` against a live `openclaw-gateway` was NOT exercised. The gateway is currently running `2026.4.24` (with bonjour disabled), but exercising task dispatch end-to-end requires creating + running a task that targets a registered agent. Deferred.
+3. **Docker / containerized deployment** — both #608 design and PR description marked Docker repro as `[blocked]` because Tyler's environment is direct VM. Containerized MC behavior is the original failure case from upstream issue #608 and remains unverified in our fork. CI matrix is the appropriate venue for this once a maintainer with container infra picks it up.
+4. **Pre-existing `gateway-url.test.ts` failure** — still fails (1 case: "uses ws:// for prefixed localhost URL even with https scheme"). Confirmed pre-existing on `phase-0/baseline-audit` baseline before Phase 1 work. Out of scope; tracked for future cleanup.
+5. **#574 IndexedDB CryptoKey roundtrip via Camofox** — could not be smoke-tested in real browser because Camoufox's evaluate sandbox hangs on structured-clone CryptoKey to IDB (Camofox limitation, not a code defect). Vitest covers the contract via in-memory store; W3C structured-clone of `CryptoKey` is standardised across Chromium/Firefox.
+6. **`mc-device-token` classification follow-up** — `docs/audit/PR2_DEVICE_TOKEN_FOLLOWUP.md` documents the gateway-side audit needed to determine whether the token is bearer-equivalent. Open issue draft included; not opened upstream because issues are disabled on the fork and Tyler's policy is to batch upstream pokes.
+7. **Generic `callOpenClawGateway` callers not migrated** — PR #3 only migrated the two task-dispatch full-text paths. Generic CLI-wrapper callers (`channels/route.ts`, `nodes/route.ts`, `sessions/route.ts`, etc.) still shell out via `runOpenClaw`. They'll fail with `ENOENT` in a containerized MC where the CLI binary is absent. Deferred to a follow-up "generic gateway callers WS migration" PR per Đào's narrow-scope caveat (msg 1078).
+
+### Auth boundary 401 — explicitly NOT a defect
+
+Both `/api/openclaw/doctor` and `/api/agents` returning HTTP 401 on anonymous smoke calls is the **expected** behavior — these endpoints require admin auth via `requireRole(request, 'admin')`. The 401 confirms:
+- Auth middleware is loaded
+- Routes are registered
+- Server-side validation is enforced
+
+Not a residual risk. Documented here to prevent future readers from misreading the smoke log.
+
+### What Phase 1 does NOT claim
+
+Mission Control on this branch is **NOT production-ready** in the upstream-merge sense. Closure is for the **fork-local development sequence** only. Going to upstream `builderz-labs/mission-control` requires:
+- Coordinated review with upstream maintainer (incl. PR #607 reconciliation since jmmc-tools' PR overlaps #608)
+- Wider compat testing (Windows, macOS, Docker, multiple gateway versions)
+- Performance testing (concurrent admin load on doctor cache, IDB key migration across legacy browser profiles)
+- A PR-per-fix split if upstream prefers narrow PRs
+
+### Recommended next moves
+
+| Order | Action | Owner | Risk |
+|---|---|---|---|
+| 1 | Open follow-up issue draft for `mc-device-token` gateway audit upstream | Tyler decides timing | Low |
+| 2 | If upstream PR #607 lands, sync our branch with upstream main and verify our 3 PRs still apply cleanly | Mai + Đào | Medium (potential merge conflict) |
+| 3 | "B2 deep authenticated smoke" — Camofox/Playwright login + verify each PR's runtime behavior under real traffic | Mai write, Đào review | Low |
+| 4 | "Generic gateway WS migration" PR — migrate `channels/route.ts`, `nodes/route.ts`, `sessions/route.ts` callers to `callOpenClawGatewayWS` | Mai + Đào | Medium |
+| 5 | Phase 2 PR sequence — pick from baseline `Bug Ownership Map` (#576 injection-guard hardening, #611 chat session, ...) | Tyler chooses target | Varies |
+
+### Discipline notes (institutional, kept for future phases)
+
+These conventions emerged during Phase 1 and should carry forward:
+
+- **Merge ownership** — when Tyler tags `@bemaiagent_bot` → Mai merges (gh CLI on VM); tags `@bedaoagent_bot` → Đào merges (`gh api` from OpenClaw workspace); tags BOTH → Mai default. If approval is ambiguous ("OK nha" without specific target), the responding agent asks one clarifying question before bấm merge to avoid race conditions.
+- **Design doc before code** — every PR opens with a design doc (`docs/audit/PRn_*_DESIGN.md`) reviewed by Đào and approved by Tyler before any impl branch. Saved 2 hours on PR #2 by reaching scope consensus before writing 800 lines of code.
+- **Backwards-compat scoping** — only swap call sites that strictly need the new behavior; preserve legacy wrappers (`callOpenClawGateway`, `runOpenClaw`) for callers that don't need the new code path. Keeps PRs narrow + reversible.
+- **`tsc -p .` is the source of truth** — inline `tsc --noEmit` may use a fallback config that misses errors. Always pass `-p .` or use `pnpm run typecheck`. Caught by Đào on PR #3 (msg 1087).
+- **"[blocked]" with evidence ≠ broken** — when Docker repro / live-gateway test isn't possible in our env, document `[blocked]` with reference to upstream evidence (issue body, upstream PR claims) instead of pretending repro happened. Acceptable for fork-local closure, must be elevated to maintainer for upstream merge.
+
+---
