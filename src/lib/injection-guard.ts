@@ -25,6 +25,20 @@ export interface InjectionMatch {
   rule: string
   description: string
   matched: string
+  /**
+   * Optional provenance: which transforms were applied to the input
+   * before this rule fired. Undefined for matches on the raw input
+   * (zero-change for callers that ignore this field).
+   *
+   * Examples:
+   *   - undefined          → matched the raw input directly
+   *   - ['normalize']      → matched after Unicode normalization
+   *   - ['normalize', 'base64'] → matched after normalize then base64 decode
+   *
+   * Added in PR #4 commit 3 (issue #576 Layer 1 hardening). Optional by
+   * design so existing callers do not break.
+   */
+  transformChain?: string[]
 }
 
 export interface InjectionReport {
@@ -39,6 +53,374 @@ export interface GuardOptions {
   maxLength?: number
   /** Scan context: 'prompt' applies all rules; 'display' skips command injection; 'shell' focuses on command rules */
   context?: 'prompt' | 'display' | 'shell'
+}
+
+// ---------------------------------------------------------------------------
+// Constants (PR #4 — Phase 2 #576 hardening, Layer 1)
+// ---------------------------------------------------------------------------
+
+/** Maximum input length scanned. Existing behavior, unchanged. */
+export const MAX_LENGTH = 50_000
+
+/** Maximum total candidates (raw + normalized + decoded) per scan. */
+export const MAX_CANDIDATES = 8
+
+/** Maximum recursion depth for decode passes. */
+export const MAX_DEPTH = 2
+
+/** Upper bound on a single base64 chunk we will attempt to decode. */
+export const MAX_B64_CHUNK = 1024
+
+/** Lower bound — base64 chunks shorter than this are ignored as noise. */
+export const MIN_B64_CHUNK = 16
+
+/** ROT13 decoder requires at least this many ASCII letters before activating. */
+export const ROT13_MIN_LETTERS = 8
+
+// ---------------------------------------------------------------------------
+// Normalization helpers (PR #4 commit 1)
+//
+// Deterministic transform applied to user input before regex scanning.
+// Pure functions, no I/O, no logging.
+// ---------------------------------------------------------------------------
+
+/** Strip null bytes and C0/C1 control characters except \t \n \r. */
+export function stripControlChars(input: string): string {
+  // C0 (U+0000–U+001F) minus tab/LF/CR + DEL (U+007F) + C1 (U+0080–U+009F)
+  return input.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u0080-\u009F]/g, '')
+}
+
+/** Strip zero-width / format characters: ZWSP, ZWNJ, ZWJ, WJ, BOM. */
+export function stripZeroWidth(input: string): string {
+  return input.replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
+}
+
+/**
+ * Conservative confusables fold. Small curated map of the most commonly
+ * abused Cyrillic, Greek, and long-s substitutions. Intentionally small
+ * to avoid pulling Unicode TR39 and to bound false-positive risk.
+ *
+ * Only folds *visible* look-alikes that share the same canonical glyph
+ * shape — does NOT fold semantically distinct letters even if visually similar.
+ */
+const CONFUSABLES_MAP: Record<string, string> = {
+  // Cyrillic lowercase → Latin
+  'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p',
+  'с': 'c', 'у': 'y', 'х': 'x', 'і': 'i',
+  'ј': 'j', 'ѕ': 's',
+  // Cyrillic uppercase → Latin
+  'А': 'A', 'Е': 'E', 'О': 'O', 'Р': 'P',
+  'С': 'C', 'Х': 'X', 'І': 'I', 'Ј': 'J',
+  'Ѕ': 'S', 'В': 'B', 'Н': 'H', 'К': 'K',
+  'М': 'M', 'Т': 'T',
+  // Greek lowercase → Latin
+  'α': 'a', 'ο': 'o', 'ρ': 'p', 'ν': 'v',
+  'υ': 'u', 'χ': 'x',
+  // Greek uppercase → Latin
+  'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Ζ': 'Z',
+  'Η': 'H', 'Ι': 'I', 'Κ': 'K', 'Μ': 'M',
+  'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T',
+  'Υ': 'Y', 'Χ': 'X',
+  // Mathematical / fullwidth duplicates not covered cleanly by NFKC
+  'ſ': 's', // long-s
+}
+
+/** Apply confusables map character-by-character. */
+export function applyConfusablesFold(input: string): string {
+  let out = ''
+  for (const ch of input) {
+    out += CONFUSABLES_MAP[ch] ?? ch
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Decode strategies (PR #4 commit 2a — base64)
+//
+// Pure helpers. Bounded, fail-soft. Each returns an array of decoded
+// candidates derived from substrings of the input. Wiring into
+// scanForInjection happens in commit 3.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserved slot count for raw + normalize candidates. The caller in commit 3
+ * will scan raw + normalize() output as 2 always-on candidates; decoders may
+ * emit at most MAX_CANDIDATES - DECODE_RESERVED additional ones so the total
+ * candidate budget is preserved.
+ */
+const DECODE_RESERVED = 2
+
+/** Maximum decoded candidates a single decoder may emit. */
+export const DECODE_EMIT_CAP = MAX_CANDIDATES - DECODE_RESERVED // 6
+
+/**
+ * Validate that a decoded base64 chunk is plausibly *text*, not random binary
+ * that happens to be printable.
+ *
+ * Returns true when:
+ *   - decoded length >= 4
+ *   - >= 95% of bytes are printable ASCII or newline/tab
+ *   - round-trip: re-encoding the decoded bytes yields the original chunk
+ *     (modulo missing trailing '=' padding)
+ *
+ * The round-trip is the strict gate that rejects permissive Buffer.from
+ * pseudo-base64 strings (Đào caveat msg 1206 item 1): without it, a benign
+ * URL slug can decode to garbage but appear printable.
+ */
+function isPlausibleBase64Text(chunk: string, decoded: string): boolean {
+  if (decoded.length < 4) return false
+  let nonPrintable = 0
+  for (let i = 0; i < decoded.length; i++) {
+    const c = decoded.charCodeAt(i)
+    const printable =
+      (c >= 0x20 && c <= 0x7E) || c === 0x09 || c === 0x0A || c === 0x0D
+    if (!printable) nonPrintable++
+  }
+  if (nonPrintable / decoded.length > 0.05) return false
+
+  // Round-trip check: re-encode the decoded bytes and compare against the
+  // original chunk. The original may differ in trailing '=' padding count,
+  // so we strip trailing '=' on both sides before comparing.
+  const reEncoded = Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '')
+  const original = chunk.replace(/=+$/, '')
+  return reEncoded === original
+}
+
+/**
+ * Find every base64-shaped substring of length [MIN_B64_CHUNK, MAX_B64_CHUNK]
+ * in `input`, decode each, and return the plausibly-textual decoded
+ * candidates. Bounded by DECODE_EMIT_CAP.
+ *
+ * Pure, fail-soft: any throw or invalid result is silently dropped. The
+ * function never throws and returns an empty array if no candidates pass.
+ */
+export function decodeBase64Chunks(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  // Match base64-shaped runs. The {4,1024} bound is the alphabet portion
+  // only; the total chunk length (alphabet + optional '=' padding) is
+  // gated separately by MIN_B64_CHUNK / MAX_B64_CHUNK so that a legitimate
+  // 16-char encoded form like 'aGVsbG8td29ybGQ=' (15 alphabet + 1 pad)
+  // is still accepted.
+  const re = /[A-Za-z0-9+/]{4,1024}={0,2}/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(input)) !== null) {
+    if (out.length >= DECODE_EMIT_CAP) break
+    const chunk = m[0]
+    if (chunk.length < MIN_B64_CHUNK || chunk.length > MAX_B64_CHUNK) continue
+    let decoded: string
+    try {
+      decoded = Buffer.from(chunk, 'base64').toString('utf8')
+    } catch {
+      continue
+    }
+    if (!isPlausibleBase64Text(chunk, decoded)) continue
+    if (seen.has(decoded)) continue
+    seen.add(decoded)
+    out.push(decoded)
+  }
+  return out
+}
+
+/**
+ * Apply ROT13 to ASCII letters in a string. Non-letters and non-ASCII
+ * characters pass through unchanged. Pure utility used by decodeRot13.
+ */
+function applyRot13(input: string): string {
+  let out = ''
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i)
+    if (c >= 0x41 && c <= 0x5A) {
+      // 'A'..'Z'
+      out += String.fromCharCode(((c - 0x41 + 13) % 26) + 0x41)
+    } else if (c >= 0x61 && c <= 0x7A) {
+      // 'a'..'z'
+      out += String.fromCharCode(((c - 0x61 + 13) % 26) + 0x61)
+    } else {
+      out += input[i]
+    }
+  }
+  return out
+}
+
+/**
+ * Bigram patterns used as activation evidence for the ROT13 decoder.
+ * If post-ROT13 input contains any of these whole-word matches, we treat
+ * the input as plausibly ROT13-encoded English and emit the decoded form.
+ *
+ * Conservative on purpose — random English text rotated to ROT13 will not
+ * accidentally surface these unless the original WAS plaintext English with
+ * one of these words. False positives on legitimate English content are
+ * acceptable: they decode the user's text into gibberish, which the
+ * existing rule patterns will not match.
+ */
+const ROT13_TRIGGER_BIGRAMS = /\b(?:the|into|please|ignore)\b/i
+
+/**
+ * Decode a ROT13-rotated string. Whole-string transform.
+ *
+ * Activation gate (conservative):
+ *   1. input must contain >= ROT13_MIN_LETTERS ASCII letters
+ *   2. post-ROT13 output must contain at least one trigger bigram
+ *      (`the`, `into`, `please`, `ignore`)
+ *
+ * Returns `[rotated]` only when both gates pass; otherwise `[]`. This
+ * avoids generating noise candidates from random English prose, where
+ * post-ROT13 text is gibberish and matches no bigram.
+ *
+ * Pure, never throws.
+ */
+export function decodeRot13(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  let letterCount = 0
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i)
+    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)) letterCount++
+    if (letterCount >= ROT13_MIN_LETTERS) break
+  }
+  if (letterCount < ROT13_MIN_LETTERS) return []
+  const rotated = applyRot13(input)
+  if (!ROT13_TRIGGER_BIGRAMS.test(rotated)) return []
+  return [rotated]
+}
+
+/**
+ * Hardcoded small map of common named HTML entities. Intentionally limited
+ * to the ~25 most commonly seen ones — we do NOT pull a full HTML parser
+ * or dependency. Unknown entities are left untouched in the output.
+ */
+const NAMED_HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: '\u00A0', // U+00A0 NO-BREAK SPACE — not an ASCII space
+  copy: '©',
+  reg: '®',
+  trade: '™',
+  hellip: '…',
+  mdash: '—',
+  ndash: '–',
+  lsquo: '‘',
+  rsquo: '’',
+  ldquo: '“',
+  rdquo: '”',
+  laquo: '«',
+  raquo: '»',
+  bull: '•',
+  middot: '·',
+  deg: '°',
+  plusmn: '±',
+  times: '×',
+  divide: '÷',
+}
+
+/**
+ * Decode a numeric HTML entity (decimal `&#N;` or hex `&#xN;`) to its
+ * single Unicode character. Returns null when the codepoint is out of
+ * range, is a surrogate, or is otherwise invalid.
+ */
+function decodeNumericEntity(spec: string): string | null {
+  let cp: number
+  if (spec[0] === 'x' || spec[0] === 'X') {
+    cp = parseInt(spec.slice(1), 16)
+  } else {
+    cp = parseInt(spec, 10)
+  }
+  if (!Number.isFinite(cp)) return null
+  if (cp < 0 || cp > 0x10FFFF) return null
+  // Surrogate range is invalid for a standalone code point.
+  if (cp >= 0xD800 && cp <= 0xDFFF) return null
+  try {
+    return String.fromCodePoint(cp)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Decode a string containing common HTML entities. Single-shot whole-string
+ * transform like decodePercent. Recognised forms:
+ *   - named: &amp; &lt; &gt; &quot; &apos; &nbsp; ... (see NAMED_HTML_ENTITIES)
+ *   - numeric decimal: &#NNN;
+ *   - numeric hex: &#xNN;
+ *
+ * Returns `[decoded]` when the input contained at least one entity AND the
+ * decoded form differs from the input; otherwise `[]`. Unknown named
+ * entities (`&unknown;`) are left untouched in the output.
+ *
+ * Pure, fail-soft: never throws. No HTML-parser dependency.
+ */
+export function decodeHtmlEntities(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  if (!/&[A-Za-z#0-9]+;/.test(input)) return []
+  const decoded = input.replace(/&(#[xX][0-9A-Fa-f]+|#[0-9]+|[A-Za-z]+);/g, (full, body: string) => {
+    if (body.startsWith('#')) {
+      const ch = decodeNumericEntity(body.slice(1))
+      return ch === null ? full : ch
+    }
+    const named = NAMED_HTML_ENTITIES[body]
+    return named === undefined ? full : named
+  })
+  if (decoded === input) return []
+  return [decoded]
+}
+
+/**
+ * Decode a percent-encoded string with `decodeURIComponent`. Single-shot,
+ * whole-string transform (not chunked like base64).
+ *
+ * Returns `[decoded]` if:
+ *   - input contains at least one `%[0-9A-Fa-f]{2}` triple
+ *   - `decodeURIComponent` succeeds without throwing
+ *   - the decoded form actually differs from the input
+ *
+ * Returns `[]` (silently) on any of:
+ *   - input has no `%XX` triples
+ *   - any malformed escape (e.g. `%ZZ`, lone `%`) causes `decodeURIComponent`
+ *     to throw — caught, dropped
+ *   - decoded output is identical to input (no transformation occurred)
+ *
+ * Pure, fail-soft. Never throws.
+ */
+export function decodePercent(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  if (!/%[0-9A-Fa-f]{2}/.test(input)) return []
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(input)
+  } catch {
+    return []
+  }
+  if (decoded === input) return []
+  return [decoded]
+}
+
+/**
+ * Normalize an input string for safer regex scanning.
+ *
+ * Order is deterministic and tested:
+ *   1. strip null + control chars
+ *   2. strip zero-width / format chars
+ *   3. NFKC Unicode normalization (folds fullwidth and compatibility forms)
+ *   4. confusables fold (Cyrillic/Greek look-alikes → Latin)
+ *
+ * This is a PURE function. It does not log, throw, or mutate input.
+ * Empty / non-string input returns ''.
+ *
+ * Comments-as-obfuscation (HTML/JS comment splitting) is intentionally NOT
+ * handled here. See docs/audit/PR4_INJECTION_GUARD_DESIGN.md §5.7 — that
+ * surface needs a real parser and is deferred to a future Layer 2 PR.
+ */
+export function normalize(input: string): string {
+  if (!input || typeof input !== 'string') return ''
+  let s = stripControlChars(input)
+  s = stripZeroWidth(s)
+  s = s.normalize('NFKC')
+  s = applyConfusablesFold(s)
+  return s
 }
 
 // ---------------------------------------------------------------------------
@@ -216,11 +598,103 @@ const RULES: InjectionRule[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// Candidate set builder (PR #4 commit 3)
+//
+// A "candidate" is a string the scanner runs all rules against. Building
+// the candidate set is bounded by MAX_CANDIDATES so adversarial inputs
+// cannot fan out into unbounded scan work.
+// ---------------------------------------------------------------------------
+
+interface ScanCandidate {
+  text: string
+  /** Transforms applied to the raw input to produce this candidate. */
+  chain: string[]
+}
+
+/**
+ * Build the bounded candidate set for a scan.
+ *
+ * Order:
+ *   1. raw input                   chain = []
+ *   2. normalize(input)            chain = ['normalize']  (only if differs)
+ *   3. each decoder applied to (1) chain = [decoder]      (only if non-empty)
+ *   4. each decoder applied to (2) chain = ['normalize', decoder]
+ *
+ * Bounded by MAX_CANDIDATES total (raw + norm + decoded). Decoders that
+ * produce duplicates of an existing candidate are dropped via the seen set.
+ *
+ * Pure: no I/O, no logging. The decoder helpers themselves are fail-soft
+ * and never throw, so this function never throws either.
+ */
+function buildCandidateSet(input: string): ScanCandidate[] {
+  const cands: ScanCandidate[] = []
+  const seen = new Set<string>()
+
+  const push = (text: string, chain: string[]): boolean => {
+    if (cands.length >= MAX_CANDIDATES) return false
+    if (seen.has(text)) return false
+    seen.add(text)
+    cands.push({ text, chain })
+    return true
+  }
+
+  // 1. raw
+  push(input, [])
+
+  // 2. normalize
+  const norm = normalize(input)
+  if (norm) push(norm, ['normalize'])
+
+  // 3. decoders applied to a base candidate
+  const applyDecoders = (base: ScanCandidate) => {
+    if (cands.length >= MAX_CANDIDATES) return
+    for (const dec of decoderRoster) {
+      if (cands.length >= MAX_CANDIDATES) break
+      const out = dec.fn(base.text)
+      for (const decoded of out) {
+        if (cands.length >= MAX_CANDIDATES) break
+        push(decoded, [...base.chain, dec.name])
+      }
+    }
+  }
+
+  // Iterate over a snapshot — applyDecoders may push new candidates but
+  // we deliberately don't re-decode them in this pass (depth=1 from raw,
+  // depth=2 from normalized).
+  const snapshot = cands.slice()
+  for (const base of snapshot) {
+    applyDecoders(base)
+  }
+
+  return cands
+}
+
+const decoderRoster: ReadonlyArray<{ name: string; fn: (s: string) => string[] }> = [
+  { name: 'base64', fn: decodeBase64Chunks },
+  { name: 'percent', fn: decodePercent },
+  { name: 'html', fn: decodeHtmlEntities },
+  { name: 'rot13', fn: decodeRot13 },
+]
+
+// ---------------------------------------------------------------------------
 // Core scanner
 // ---------------------------------------------------------------------------
 
 /**
- * Scan a string for prompt injection, command injection, and exfiltration patterns.
+ * Scan a string for prompt injection, command injection, and exfiltration
+ * patterns.
+ *
+ * Behavior (PR #4 commit 3 hardening):
+ *   - Builds a bounded candidate set: raw + normalize(input) + bounded
+ *     decode passes (base64, percent, HTML entity, ROT13).
+ *   - Runs every applicable rule against every candidate.
+ *   - Findings on transformed candidates carry a `transformChain` array
+ *     showing the provenance (e.g. ['normalize', 'base64']). Findings on
+ *     the raw input have `transformChain` undefined — full backward
+ *     compatibility for existing callers.
+ *   - Dedup: same (rule, matched) reported once. Prefer the candidate
+ *     with the shortest transformChain, so raw matches win over
+ *     normalized matches win over decoded matches.
  *
  * Returns a report with `safe: true` if no actionable matches were found.
  */
@@ -233,23 +707,41 @@ export function scanForInjection(input: string, options: GuardOptions = {}): Inj
 
   // Truncate overly long input to prevent ReDoS
   const text = input.length > maxLength ? input.slice(0, maxLength) : input
-  const matches: InjectionMatch[] = []
+  const candidates = buildCandidateSet(text)
 
-  for (const rule of RULES) {
-    if (!rule.contexts.includes(context)) continue
+  // Map keyed by `${rule}|${matched}` -> finding with shortest chain so far.
+  const dedup = new Map<string, InjectionMatch>()
 
-    const match = rule.pattern.exec(text)
-    if (match) {
-      matches.push({
+  for (const cand of candidates) {
+    for (const rule of RULES) {
+      if (!rule.contexts.includes(context)) continue
+
+      const m = rule.pattern.exec(cand.text)
+      if (!m) continue
+
+      const matched = m[0].slice(0, 80)
+      const key = `${rule.rule}|${matched}`
+      const existing = dedup.get(key)
+      if (existing && (existing.transformChain?.length ?? 0) <= cand.chain.length) {
+        // already have a shorter (or equal) provenance for this finding
+        continue
+      }
+
+      const finding: InjectionMatch = {
         category: rule.category,
         severity: rule.severity,
         rule: rule.rule,
         description: rule.description,
-        matched: match[0].slice(0, 80),
-      })
+        matched,
+      }
+      if (cand.chain.length > 0) {
+        finding.transformChain = cand.chain
+      }
+      dedup.set(key, finding)
     }
   }
 
+  const matches = Array.from(dedup.values())
   const unsafe = matches.some(
     m => m.severity === 'critical' || (!criticalOnly && m.severity === 'warning')
   )
