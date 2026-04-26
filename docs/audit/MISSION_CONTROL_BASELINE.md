@@ -700,7 +700,7 @@ What is intentionally deferred (and noted):
 
 **Date:** 2026-04-26
 **Branch:** `phase-0/baseline-audit` (fork `imtylervo/mission-control`)
-**Status:** Phase 1 PR sequence complete. Ready for Phase 2 planning.
+**Status:** Phase 1 PR sequence complete for fork-local development. Ready for Tyler review before Phase 2 planning.
 
 ### Merged PRs
 
@@ -715,7 +715,7 @@ What is intentionally deferred (and noted):
 **Suite delta:** baseline 938 pass → post-PR-3 968+ pass / 1 pre-existing fail unchanged.
 **Process discipline:** all 3 PRs followed identical flow — Mai writes design doc → Đào reviews → Tyler approves → Mai writes impl → Đào reviews → Tyler approves merge.
 
-### Smoke test result (Plan B, executed 2026-04-26)
+### Smoke test result (compile + unauthenticated integration smoke, executed 2026-04-26)
 
 **Compile + integration smoke (Mai, msg 1109):**
 - ✅ `next dev` boots cleanly on port 3000 (Next.js 16.1.6 Turbopack, ready in 1248ms)
@@ -766,7 +766,7 @@ Not a residual risk. Documented here to prevent future readers from misreading t
 Mission Control on this branch is **NOT production-ready** in the upstream-merge sense. Closure is for the **fork-local development sequence** only. Going to upstream `builderz-labs/mission-control` requires:
 - Coordinated review with upstream maintainer (incl. PR #607 reconciliation since jmmc-tools' PR overlaps #608)
 - Wider compat testing (Windows, macOS, Docker, multiple gateway versions)
-- Performance testing (concurrent admin load on doctor cache, IDB key migration on legacy palaces with ≥10K keys)
+- Performance testing (concurrent admin load on doctor cache, IDB key migration across legacy browser profiles)
 - A PR-per-fix split if upstream prefers narrow PRs
 
 ### Recommended next moves
