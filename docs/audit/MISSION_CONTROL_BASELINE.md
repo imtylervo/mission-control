@@ -747,7 +747,7 @@ Tyler created admin account via `/setup`. Camofox session + programmatic admin l
 | PR | Status | Evidence |
 |---|---|---|
 | #613 | **verified** | Cache metadata + TTL + single-flight all confirmed at runtime (details below) |
-| #574 | blocked | No device-identity state — browser hasn't paired with gateway yet, so localStorage is empty and there is nothing to migrate from. Camofox/Camoufox sandbox additionally hangs on structured-clone of `CryptoKey` to IndexedDB. |
+| #574 | **blocked — refined** | Tyler's gateway currently reports **Device auth disabled — MC authenticates via gateway token** during onboarding. Because gateway does not send a `nonce`, `websocket.ts` skips `getOrCreateDeviceIdentity()`, so the device-identity migration path is not exercised in Tyler's current token-only setup. This is not a PR #2 failure; it is a config/mode limitation. Token storage risk remains tracked separately in `docs/audit/PR2_DEVICE_TOKEN_FOLLOWUP.md` and needs gateway-side audit. |
 | #608 | blocked | Onboarding modal "Secure Your Station" overlays after admin login and blocks navigation to `/tasks`. Exercising live dispatch is also out of scope for this smoke per Đào's caveat (no external task fanout). |
 
 **#613 verification evidence:**
@@ -771,6 +771,9 @@ Verified design assertions:
 - TTL = 30s as specified in PR #1 design.
 - Single-flight: subprocess is NOT re-spawned within the TTL window (massive latency drop on the second call confirms cache is in-memory).
 - `ageMs + nextRefreshAfterMs = TTL_MS` invariant preserved.
+
+
+**#574 refined blocker note:** Mission Control only calls `getOrCreateDeviceIdentity()` when the gateway sends a device-auth `nonce` and the client is not in token-only fallback. Tyler's current gateway/onboarding path says device auth is disabled, so no `mc-device-*` localStorage keys are expected. Do not describe the token-only path as “safe” without caveat; localStorage token risk depends on gateway-side acceptance behavior and remains a follow-up audit item.
 
 **Operational findings (NOT defects):**
 
