@@ -82,9 +82,9 @@ export function stripZeroWidth(input: string): string {
 }
 
 /**
- * Conservative confusables fold. ~60 hand-curated entries from the most
- * commonly abused Cyrillic/Greek/fullwidth substitutions. Intentionally
- * small to avoid pulling Unicode TR39 and to bound false-positive risk.
+ * Conservative confusables fold. Small curated map of the most commonly
+ * abused Cyrillic, Greek, and long-s substitutions. Intentionally small
+ * to avoid pulling Unicode TR39 and to bound false-positive risk.
  *
  * Only folds *visible* look-alikes that share the same canonical glyph
  * shape — does NOT fold semantically distinct letters even if visually similar.
@@ -116,6 +116,95 @@ export function applyConfusablesFold(input: string): string {
   let out = ''
   for (const ch of input) {
     out += CONFUSABLES_MAP[ch] ?? ch
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Decode strategies (PR #4 commit 2a — base64)
+//
+// Pure helpers. Bounded, fail-soft. Each returns an array of decoded
+// candidates derived from substrings of the input. Wiring into
+// scanForInjection happens in commit 3.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserved slot count for raw + normalize candidates. The caller in commit 3
+ * will scan raw + normalize() output as 2 always-on candidates; decoders may
+ * emit at most MAX_CANDIDATES - DECODE_RESERVED additional ones so the total
+ * candidate budget is preserved.
+ */
+const DECODE_RESERVED = 2
+
+/** Maximum decoded candidates a single decoder may emit. */
+export const DECODE_EMIT_CAP = MAX_CANDIDATES - DECODE_RESERVED // 6
+
+/**
+ * Validate that a decoded base64 chunk is plausibly *text*, not random binary
+ * that happens to be printable.
+ *
+ * Returns true when:
+ *   - decoded length >= 4
+ *   - >= 95% of bytes are printable ASCII or newline/tab
+ *   - round-trip: re-encoding the decoded bytes yields the original chunk
+ *     (modulo missing trailing '=' padding)
+ *
+ * The round-trip is the strict gate that rejects permissive Buffer.from
+ * pseudo-base64 strings (Đào caveat msg 1206 item 1): without it, a benign
+ * URL slug can decode to garbage but appear printable.
+ */
+function isPlausibleBase64Text(chunk: string, decoded: string): boolean {
+  if (decoded.length < 4) return false
+  let nonPrintable = 0
+  for (let i = 0; i < decoded.length; i++) {
+    const c = decoded.charCodeAt(i)
+    const printable =
+      (c >= 0x20 && c <= 0x7E) || c === 0x09 || c === 0x0A || c === 0x0D
+    if (!printable) nonPrintable++
+  }
+  if (nonPrintable / decoded.length > 0.05) return false
+
+  // Round-trip check: re-encode the decoded bytes and compare against the
+  // original chunk. The original may differ in trailing '=' padding count,
+  // so we strip trailing '=' on both sides before comparing.
+  const reEncoded = Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '')
+  const original = chunk.replace(/=+$/, '')
+  return reEncoded === original
+}
+
+/**
+ * Find every base64-shaped substring of length [MIN_B64_CHUNK, MAX_B64_CHUNK]
+ * in `input`, decode each, and return the plausibly-textual decoded
+ * candidates. Bounded by DECODE_EMIT_CAP.
+ *
+ * Pure, fail-soft: any throw or invalid result is silently dropped. The
+ * function never throws and returns an empty array if no candidates pass.
+ */
+export function decodeBase64Chunks(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  // Match base64-shaped runs. The {4,1024} bound is the alphabet portion
+  // only; the total chunk length (alphabet + optional '=' padding) is
+  // gated separately by MIN_B64_CHUNK / MAX_B64_CHUNK so that a legitimate
+  // 16-char encoded form like 'aGVsbG8td29ybGQ=' (15 alphabet + 1 pad)
+  // is still accepted.
+  const re = /[A-Za-z0-9+/]{4,1024}={0,2}/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(input)) !== null) {
+    if (out.length >= DECODE_EMIT_CAP) break
+    const chunk = m[0]
+    if (chunk.length < MIN_B64_CHUNK || chunk.length > MAX_B64_CHUNK) continue
+    let decoded: string
+    try {
+      decoded = Buffer.from(chunk, 'base64').toString('utf8')
+    } catch {
+      continue
+    }
+    if (!isPlausibleBase64Text(chunk, decoded)) continue
+    if (seen.has(decoded)) continue
+    seen.add(decoded)
+    out.push(decoded)
   }
   return out
 }
