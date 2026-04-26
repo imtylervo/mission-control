@@ -1,6 +1,9 @@
 import { getDatabase, db_helpers } from './db'
-import { runOpenClaw } from './command'
 import { callOpenClawGateway } from './openclaw-gateway'
+import {
+  callGatewayAgentForText,
+  GatewayEmptyResponseError,
+} from './openclaw-gateway-ws'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { config } from './config'
@@ -99,45 +102,9 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
   return lines.join('\n')
 }
 
-/** Extract first valid JSON object from raw stdout (handles surrounding text/warnings). */
-function parseGatewayJson(raw: string): any | null {
-  const trimmed = String(raw || '').trim()
-  if (!trimmed) return null
-  const start = trimmed.indexOf('{')
-  const end = trimmed.lastIndexOf('}')
-  if (start < 0 || end < start) return null
-  try {
-    return JSON.parse(trimmed.slice(start, end + 1))
-  } catch {
-    return null
-  }
-}
-
 interface AgentResponseParsed {
   text: string | null
   sessionId: string | null
-}
-
-function parseAgentResponse(stdout: string): AgentResponseParsed {
-  try {
-    const parsed = JSON.parse(stdout)
-    const sessionId: string | null = typeof parsed?.sessionId === 'string' ? parsed.sessionId
-      : typeof parsed?.session_id === 'string' ? parsed.session_id
-      : null
-
-    // OpenClaw agent --json returns { payloads: [{ text: "..." }] }
-    if (parsed?.payloads?.[0]?.text) {
-      return { text: parsed.payloads[0].text, sessionId }
-    }
-    // Fallback: if there's a result or output field
-    if (parsed?.result) return { text: String(parsed.result), sessionId }
-    if (parsed?.output) return { text: String(parsed.output), sessionId }
-    // Last resort: stringify the whole response
-    return { text: JSON.stringify(parsed, null, 2), sessionId }
-  } catch {
-    // Not valid JSON — return raw stdout if non-empty
-    return { text: stdout.trim() || null, sessionId: null }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,21 +384,17 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
         // Resolve the gateway agent ID from config, falling back to assigned_to or default
         const reviewAgent = resolveGatewayAgentIdForReview(task)
 
-        const invokeParams = {
-          message: prompt,
-          agentId: reviewAgent,
-          idempotencyKey: `aegis-review-${task.id}-${Date.now()}`,
-          deliver: false,
-        }
-        const finalResult = await runOpenClaw(
-          ['gateway', 'call', 'agent', '--expect-final', '--timeout', '120000', '--params', JSON.stringify(invokeParams), '--json'],
-          { timeoutMs: 125_000 }
-        )
-        const finalPayload = parseGatewayJson(finalResult.stdout)
-          ?? parseGatewayJson(String((finalResult as any)?.stderr || ''))
-        agentResponse = parseAgentResponse(
-          finalPayload?.result ? JSON.stringify(finalPayload.result) : finalResult.stdout
-        )
+        // PR #608: native WS replaces CLI subprocess (which fails with ENOENT
+        // in containerized MC deployments). callGatewayAgentForText sets
+        // deliver:true and extracts payloads[0].text from the run result —
+        // throws GatewayEmptyResponseError if the gateway returns
+        // lifecycle-only metadata.
+        const idempotencyKey = `aegis-review-${task.id}-${Date.now()}`
+        const aegisRun = await callGatewayAgentForText(reviewAgent, prompt, {
+          timeoutMs: 120_000,
+          idempotencyKey,
+        })
+        agentResponse = { text: aegisRun.text, sessionId: aegisRun.sessionId ?? null }
       }
 
       if (!agentResponse.text) {
@@ -723,35 +686,21 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           sessionId: sendResult?.runId || targetSession,
         }
       } else {
-        // Step 1: Invoke via gateway (new session)
+        // Step 1: Invoke via gateway (new session) — PR #608 fix.
+        // Native WS replaces the legacy `runOpenClaw([...gateway call agent
+        // --expect-final...])` pattern, which fails with `spawn openclaw
+        // ENOENT` whenever Mission Control is deployed in a container that
+        // doesn't bundle the openclaw CLI binary.
+        // callGatewayAgentForText sets deliver:true so the run result
+        // includes payloads[0].text directly — no --expect-final needed.
         const gatewayAgentId = resolveGatewayAgentId(task)
         const dispatchModel = resolveTaskDispatchModelOverride(task)
-        const invokeParams: Record<string, unknown> = {
-          message: prompt,
-          agentId: gatewayAgentId,
+        const dispatchRun = await callGatewayAgentForText(gatewayAgentId, prompt, {
+          timeoutMs: 120_000,
           idempotencyKey: `task-dispatch-${task.id}-${Date.now()}`,
-          deliver: false,
-        }
-        // Route to appropriate model tier based on task complexity.
-        // null = no override, agent uses its own configured default model.
-        if (dispatchModel) invokeParams.model = dispatchModel
-
-        // Use --expect-final to block until the agent completes and returns the full
-        // response payload (result.payloads[0].text). The two-step agent → agent.wait
-        // pattern only returns lifecycle metadata and never includes the agent's text.
-        const finalResult = await runOpenClaw(
-          ['gateway', 'call', 'agent', '--expect-final', '--timeout', '120000', '--params', JSON.stringify(invokeParams), '--json'],
-          { timeoutMs: 125_000 }
-        )
-        const finalPayload = parseGatewayJson(finalResult.stdout)
-          ?? parseGatewayJson(String((finalResult as any)?.stderr || ''))
-
-        agentResponse = parseAgentResponse(
-          finalPayload?.result ? JSON.stringify(finalPayload.result) : finalResult.stdout
-        )
-        if (!agentResponse.sessionId && finalPayload?.result?.meta?.agentMeta?.sessionId) {
-          agentResponse.sessionId = finalPayload.result.meta.agentMeta.sessionId
-        }
+          model: dispatchModel ?? undefined,
+        })
+        agentResponse = { text: dispatchRun.text, sessionId: dispatchRun.sessionId ?? null }
       } // end else (new session dispatch)
 
       if (!agentResponse.text) {
