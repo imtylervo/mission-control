@@ -210,6 +210,89 @@ export function decodeBase64Chunks(input: string): string[] {
 }
 
 /**
+ * Hardcoded small map of common named HTML entities. Intentionally limited
+ * to the ~25 most commonly seen ones — we do NOT pull a full HTML parser
+ * or dependency. Unknown entities are left untouched in the output.
+ */
+const NAMED_HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: '\u00A0', // U+00A0 NO-BREAK SPACE — not an ASCII space
+  copy: '©',
+  reg: '®',
+  trade: '™',
+  hellip: '…',
+  mdash: '—',
+  ndash: '–',
+  lsquo: '‘',
+  rsquo: '’',
+  ldquo: '“',
+  rdquo: '”',
+  laquo: '«',
+  raquo: '»',
+  bull: '•',
+  middot: '·',
+  deg: '°',
+  plusmn: '±',
+  times: '×',
+  divide: '÷',
+}
+
+/**
+ * Decode a numeric HTML entity (decimal `&#N;` or hex `&#xN;`) to its
+ * single Unicode character. Returns null when the codepoint is out of
+ * range, is a surrogate, or is otherwise invalid.
+ */
+function decodeNumericEntity(spec: string): string | null {
+  let cp: number
+  if (spec[0] === 'x' || spec[0] === 'X') {
+    cp = parseInt(spec.slice(1), 16)
+  } else {
+    cp = parseInt(spec, 10)
+  }
+  if (!Number.isFinite(cp)) return null
+  if (cp < 0 || cp > 0x10FFFF) return null
+  // Surrogate range is invalid for a standalone code point.
+  if (cp >= 0xD800 && cp <= 0xDFFF) return null
+  try {
+    return String.fromCodePoint(cp)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Decode a string containing common HTML entities. Single-shot whole-string
+ * transform like decodePercent. Recognised forms:
+ *   - named: &amp; &lt; &gt; &quot; &apos; &nbsp; ... (see NAMED_HTML_ENTITIES)
+ *   - numeric decimal: &#NNN;
+ *   - numeric hex: &#xNN;
+ *
+ * Returns `[decoded]` when the input contained at least one entity AND the
+ * decoded form differs from the input; otherwise `[]`. Unknown named
+ * entities (`&unknown;`) are left untouched in the output.
+ *
+ * Pure, fail-soft: never throws. No HTML-parser dependency.
+ */
+export function decodeHtmlEntities(input: string): string[] {
+  if (!input || typeof input !== 'string') return []
+  if (!/&[A-Za-z#0-9]+;/.test(input)) return []
+  const decoded = input.replace(/&(#[xX][0-9A-Fa-f]+|#[0-9]+|[A-Za-z]+);/g, (full, body: string) => {
+    if (body.startsWith('#')) {
+      const ch = decodeNumericEntity(body.slice(1))
+      return ch === null ? full : ch
+    }
+    const named = NAMED_HTML_ENTITIES[body]
+    return named === undefined ? full : named
+  })
+  if (decoded === input) return []
+  return [decoded]
+}
+
+/**
  * Decode a percent-encoded string with `decodeURIComponent`. Single-shot,
  * whole-string transform (not chunked like base64).
  *
