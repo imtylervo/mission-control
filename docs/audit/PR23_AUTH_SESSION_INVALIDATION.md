@@ -55,7 +55,7 @@ This PR does not change env loading. Documenting the rules because the Phase 2.1
 - The seed runs **once**, on first SQLite open, when `users` is empty. (`src/lib/auth.ts` first-run seed block.)
 - After the first user exists, the values in `.env` / `.env.local` are no longer consulted by user-creation paths. Re-deploying with a new `AUTH_PASS_B64` value does not rotate the admin password.
 - Rotation paths:
-  - `POST /api/auth/me` — self-service password change. The current session stays valid after a successful rotation (the cookie is rebound to the new password's session id).
+  - `PATCH /api/auth/me` — self-service password change. The current session stays valid after a successful rotation (the cookie is rebound to the new password's session id).
   - `PUT /api/auth/users` — admin resets another user's password. **All of that user's existing sessions are now destroyed** (this PR's behavior).
 - Session lifecycle helpers in `src/lib/auth.ts`:
   - `destroySession(token)` — drop one session.

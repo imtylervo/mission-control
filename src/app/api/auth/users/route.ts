@@ -180,8 +180,11 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'User ID is required' }, { status: 400 })
   }
 
-  const userId = parseInt(String(id))
-  if (Number.isNaN(userId)) {
+  // Strict integer parse: Number() rejects partial-numeric strings like
+  // "42abc" with NaN (parseInt would accept the leading 42 and silently
+  // operate on the wrong row).
+  const userId = Number(id)
+  if (!Number.isInteger(userId) || userId <= 0) {
     return NextResponse.json({ error: 'User ID is required' }, { status: 400 })
   }
 

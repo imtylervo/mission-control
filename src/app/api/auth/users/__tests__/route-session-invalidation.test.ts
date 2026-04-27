@@ -209,4 +209,21 @@ describe('DELETE /api/auth/users — accepts query string OR body', () => {
     expect(res.status).toBe(400)
     expect(mocks.deleteUser).not.toHaveBeenCalled()
   })
+
+  it('returns 400 when id is partial-numeric (e.g. "42abc") — strict Number() parse', async () => {
+    // parseInt("42abc") would silently accept the leading 42 and target a
+    // different user. Number("42abc") is NaN; the strict integer check
+    // rejects it cleanly.
+    const req = makeRequest('http://test/api/auth/users?id=42abc', { method: 'DELETE' })
+    const res = await DELETE(req as any)
+    expect(res.status).toBe(400)
+    expect(mocks.deleteUser).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 when id is zero or negative', async () => {
+    const req = makeRequest('http://test/api/auth/users?id=0', { method: 'DELETE' })
+    const res = await DELETE(req as any)
+    expect(res.status).toBe(400)
+    expect(mocks.deleteUser).not.toHaveBeenCalled()
+  })
 })
