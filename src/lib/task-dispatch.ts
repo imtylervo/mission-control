@@ -1,7 +1,7 @@
 import { getDatabase, db_helpers } from './db'
-import { callOpenClawGateway } from './openclaw-gateway'
 import {
   callGatewayAgentForText,
+  callOpenClawGatewayWS,
   GatewayEmptyResponseError,
 } from './openclaw-gateway-ws'
 import { eventBus } from './event-bus'
@@ -666,7 +666,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       } else if (targetSession) {
         // Dispatch to a specific existing session via chat.send
         logger.info({ taskId: task.id, targetSession, agent: task.agent_name }, 'Dispatching task to targeted session')
-        const sendResult = await callOpenClawGateway<any>(
+        const sendResult = await callOpenClawGatewayWS<any>(
           'chat.send',
           {
             sessionKey: targetSession,
@@ -674,7 +674,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
             idempotencyKey: `task-dispatch-${task.id}-${Date.now()}`,
             deliver: false,
           },
-          125_000,
+          { timeoutMs: 125_000 },
         )
         const status = String(sendResult?.status || '').toLowerCase()
         if (status !== 'started' && status !== 'ok' && status !== 'in_flight') {

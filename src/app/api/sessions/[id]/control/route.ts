@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { callOpenClawGateway } from '@/lib/openclaw-gateway'
+import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 import { db_helpers } from '@/lib/db'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
@@ -38,12 +38,13 @@ export async function POST(
 
     let result: unknown
     if (action === 'terminate') {
-      result = await callOpenClawGateway('sessions_kill', { sessionKey: id }, 10_000)
+      // PR #13 / 1.3d: sessions_kill (CLI tool name) → sessions.abort (WS method, per Đào msg 1336).
+      result = await callOpenClawGatewayWS('sessions.abort', { key: id }, { timeoutMs: 10_000 })
     } else {
       const message = action === 'monitor'
         ? { type: 'control', action: 'monitor' }
         : { type: 'control', action: 'pause' }
-      result = await callOpenClawGateway('sessions_send', { sessionKey: id, message }, 10_000)
+      result = await callOpenClawGatewayWS('sessions.send', { key: id, message }, { timeoutMs: 10_000 })
     }
 
     db_helpers.logActivity(

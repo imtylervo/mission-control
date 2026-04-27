@@ -6,7 +6,7 @@ import { scanHermesSessions } from '@/lib/hermes-sessions'
 import { scanOpenCodeSessions } from '@/lib/opencode-sessions'
 import { getDatabase, db_helpers } from '@/lib/db'
 import { requireRole } from '@/lib/auth'
-import { callOpenClawGateway } from '@/lib/openclaw-gateway'
+import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 
@@ -62,8 +62,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid session key' }, { status: 400 })
     }
 
-    let rpcMethod: string
-    let rpcParams: Record<string, unknown>
+    // PR #13 / 1.3d: all four mutation actions are unified under the WS
+    // method `sessions.patch` per Đào msg 1336. Param key is `key` (not
+    // `sessionKey`) and each action populates its own typed level/label
+    // field on the patch payload.
+    let patchParams: Record<string, unknown>
     let logDetail: string
 
     switch (action) {
@@ -72,8 +75,7 @@ export async function POST(request: NextRequest) {
         if (!VALID_THINKING_LEVELS.includes(level)) {
           return NextResponse.json({ error: `Invalid thinking level. Must be: ${VALID_THINKING_LEVELS.join(', ')}` }, { status: 400 })
         }
-        rpcMethod = 'session_setThinking'
-        rpcParams = { sessionKey, level }
+        patchParams = { key: sessionKey, thinkingLevel: level }
         logDetail = `Set thinking=${level} on ${sessionKey}`
         break
       }
@@ -82,8 +84,7 @@ export async function POST(request: NextRequest) {
         if (!VALID_VERBOSE_LEVELS.includes(level)) {
           return NextResponse.json({ error: `Invalid verbose level. Must be: ${VALID_VERBOSE_LEVELS.join(', ')}` }, { status: 400 })
         }
-        rpcMethod = 'session_setVerbose'
-        rpcParams = { sessionKey, level }
+        patchParams = { key: sessionKey, verboseLevel: level }
         logDetail = `Set verbose=${level} on ${sessionKey}`
         break
       }
@@ -92,8 +93,7 @@ export async function POST(request: NextRequest) {
         if (!VALID_REASONING_LEVELS.includes(level)) {
           return NextResponse.json({ error: `Invalid reasoning level. Must be: ${VALID_REASONING_LEVELS.join(', ')}` }, { status: 400 })
         }
-        rpcMethod = 'session_setReasoning'
-        rpcParams = { sessionKey, level }
+        patchParams = { key: sessionKey, reasoningLevel: level }
         logDetail = `Set reasoning=${level} on ${sessionKey}`
         break
       }
@@ -102,8 +102,7 @@ export async function POST(request: NextRequest) {
         if (typeof label !== 'string' || label.length > 100) {
           return NextResponse.json({ error: 'Label must be a string up to 100 characters' }, { status: 400 })
         }
-        rpcMethod = 'session_setLabel'
-        rpcParams = { sessionKey, label }
+        patchParams = { key: sessionKey, label }
         logDetail = `Set label="${label}" on ${sessionKey}`
         break
       }
@@ -111,7 +110,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Invalid action. Must be: set-thinking, set-verbose, set-reasoning, set-label' }, { status: 400 })
     }
 
-    const result = await callOpenClawGateway(rpcMethod, rpcParams, 10_000)
+    const result = await callOpenClawGatewayWS('sessions.patch', patchParams, { timeoutMs: 10_000 })
 
     db_helpers.logActivity(
       'session_control',
@@ -144,7 +143,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid session key' }, { status: 400 })
     }
 
-    const result = await callOpenClawGateway('session_delete', { sessionKey }, 10_000)
+    const result = await callOpenClawGatewayWS('sessions.delete', { key: sessionKey }, { timeoutMs: 10_000 })
 
     db_helpers.logActivity(
       'session_control',

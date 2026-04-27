@@ -36,6 +36,11 @@ export async function GET(request: NextRequest) {
 
   try {
     try {
+      // PR #13 / 1.3d: this callsite is INTENTIONALLY retained on the legacy
+      // CLI wrapper `callOpenClawGateway` because the WS-side gateway
+      // protocol does not (as of 2026-04-27) export `chat.history` per
+      // Đào's check (msg 1336). Migration deferred to a separate ticket
+      // once the WS method is added or an alternative read path is chosen.
       const history = await callOpenClawGateway<{ messages?: unknown[] }>(
         'chat.history',
         { sessionKey, limit },

@@ -3,7 +3,7 @@ import { requireRole } from '@/lib/auth'
 import { config } from '@/lib/config'
 import { logger } from '@/lib/logger'
 import { getDetectedGatewayToken } from '@/lib/gateway-runtime'
-import { callOpenClawGateway } from '@/lib/openclaw-gateway'
+import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 
 const gatewayInternalUrl = `http://${config.gatewayHost}:${config.gatewayPort}`
 
@@ -147,10 +147,10 @@ function transformGatewayChannels(data: GatewayData): ChannelsSnapshot {
 }
 
 async function loadChannelsViaRpc(probe = false): Promise<ChannelsSnapshot> {
-  const payload = await callOpenClawGateway<GatewayData>(
+  const payload = await callOpenClawGatewayWS<GatewayData>(
     'channels.status',
     { probe, timeoutMs: 8000 },
-    probe ? 20000 : 15000,
+    { timeoutMs: probe ? 20000 : 15000 },
   )
   return {
     ...transformGatewayChannels(payload),
@@ -159,10 +159,10 @@ async function loadChannelsViaRpc(probe = false): Promise<ChannelsSnapshot> {
 }
 
 async function loadChannelsViaCli(probe = false): Promise<ChannelsSnapshot> {
-  const payload = await callOpenClawGateway<GatewayData>(
+  const payload = await callOpenClawGatewayWS<GatewayData>(
     'channels.status',
     { probe, timeoutMs: 8000 },
-    probe ? 20000 : 15000,
+    { timeoutMs: probe ? 20000 : 15000 },
   ).catch(() => null)
 
   if (payload) {
@@ -327,7 +327,7 @@ export async function POST(request: NextRequest) {
           // Fallback to RPC below.
         }
         return NextResponse.json(
-          await callOpenClawGateway('web.login.start', { force, timeoutMs: 30000 }, 32000)
+          await callOpenClawGatewayWS('web.login.start', { force, timeoutMs: 30000 }, { timeoutMs: 32000 })
         )
       }
 
@@ -353,7 +353,7 @@ export async function POST(request: NextRequest) {
           // Fallback to RPC below.
         }
         return NextResponse.json(
-          await callOpenClawGateway('web.login.wait', { timeoutMs: 120000 }, 122000)
+          await callOpenClawGatewayWS('web.login.wait', { timeoutMs: 120000 }, { timeoutMs: 122000 })
         )
       }
 
@@ -379,7 +379,7 @@ export async function POST(request: NextRequest) {
           // Fallback to RPC below.
         }
         return NextResponse.json(
-          await callOpenClawGateway('channels.logout', { channel: 'whatsapp' }, 12000)
+          await callOpenClawGatewayWS('channels.logout', { channel: 'whatsapp' }, { timeoutMs: 12000 })
         )
       }
 
