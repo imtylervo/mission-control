@@ -181,6 +181,7 @@ For the full walkthrough, see the **[Quickstart Guide](docs/quickstart.md)**.
 | [Security Hardening](docs/SECURITY-HARDENING.md) | Docker hardening, CSP, network isolation |
 | [Release Process](RELEASE.md) | SemVer policy, branch strategy, tag/release checklist |
 | [API Reference](openapi.json) | OpenAPI 3.1 spec — 101 REST endpoints with Scalar UI at `/api-docs` |
+| [Phase Audit Summary](docs/audit/PHASE_AUDIT_SUMMARY.md) | Roll-up index of every phase audit doc on this fork's `phase-0/baseline-audit` branch |
 
 ### Gateway Optional Mode
 
