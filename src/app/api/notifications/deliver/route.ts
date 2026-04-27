@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase, Notification, db_helpers } from '@/lib/db';
-import { runOpenClaw } from '@/lib/command';
+import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
 
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
         const message = formatNotificationMessage(notification);
         
         if (!dry_run) {
-          // Send notification via OpenClaw gateway call agent
+          // Send notification via OpenClaw gateway agent invocation (native WS — PR #12 / 1.3c)
           try {
             const invokeParams = {
               message,
@@ -87,26 +87,16 @@ export async function POST(request: NextRequest) {
               idempotencyKey: `notification-${notification.id}-${Date.now()}`,
               deliver: false,
             };
-            const { stdout, stderr } = await runOpenClaw(
-              [
-                'gateway',
-                'call',
-                'agent',
-                '--params',
-                JSON.stringify(invokeParams),
-                '--json'
-              ],
-              { timeoutMs: 30000 }
+            const result = await callOpenClawGatewayWS<unknown>(
+              'agent',
+              invokeParams,
+              { timeoutMs: 30_000 }
             );
 
-            if (stderr && stderr.includes('error')) {
-              throw new Error(`OpenClaw error: ${stderr}`);
-            }
-            
             // Mark as delivered
             const now = Math.floor(Date.now() / 1000);
             markDeliveredStmt.run(now, notification.id, workspaceId);
-            
+
             deliveredCount++;
             deliveryResults.push({
               notification_id: notification.id,
@@ -114,7 +104,7 @@ export async function POST(request: NextRequest) {
               session_key: notification.session_key,
               delivered_at: now,
               status: 'delivered',
-              stdout: stdout.substring(0, 200) // Truncate for storage
+              stdout: JSON.stringify(result).substring(0, 200) // Truncated payload (was CLI stdout pre-WS migration)
             });
             
             // Log successful delivery
