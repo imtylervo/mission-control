@@ -147,4 +147,61 @@ describe('Container/Docker smoke — migrated routes still work without openclaw
   it('runOpenClaw mock is rigged to throw ENOENT — sanity check the simulation', () => {
     expect(() => mocks.runOpenClaw()).toThrow(/ENOENT/)
   })
+
+  /**
+   * Phase 5.3 wire-in: when X-Telegram-* headers are present, the
+   * activity-log payload picks up tg_ref + chat/topic IDs (no body
+   * text / sender). When headers are absent, the payload stays
+   * exactly as before.
+   */
+  it('attaches sanitized Telegram context to activity-log when X-Telegram-* headers are present', async () => {
+    const { POST } = await import('@/app/api/sessions/[id]/control/route')
+    const req = new Request('http://test/api/sessions/sess-tg/control', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-chat-id': '-1003656139138',
+        'x-telegram-topic-id': '1',
+        'x-telegram-message-id': '42',
+      },
+      body: JSON.stringify({ action: 'monitor' }),
+    })
+    const res = await POST(req as any, { params: Promise.resolve({ id: 'sess-tg' }) } as any)
+
+    expect(res.status).toBeLessThan(500)
+    expect(mocks.logActivity).toHaveBeenCalled()
+    const lastCall = mocks.logActivity.mock.calls[mocks.logActivity.mock.calls.length - 1]
+    // logActivity signature: (kind, target_type, target_id, actor, summary, detail, workspaceId?)
+    const detail = lastCall[5] as Record<string, unknown>
+    expect(detail.tg_ref).toBe('tg:-1003656139138:1:42')
+    expect(detail.chatId).toBe(-1003656139138)
+    expect(detail.topicId).toBe(1)
+    expect(detail.messageId).toBe(42)
+    // Privacy invariant: no raw body text / sender / attachment field on the detail.
+    const detailJson = JSON.stringify(detail)
+    expect(detailJson).not.toContain('PRIVATE')
+    expect(detailJson).not.toContain('username')
+    expect(detailJson).not.toContain('photo')
+  })
+
+  it('does NOT attach Telegram context when X-Telegram-* headers are absent', async () => {
+    const { POST } = await import('@/app/api/sessions/[id]/control/route')
+    const req = new Request('http://test/api/sessions/sess-no-tg/control', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'monitor' }),
+    })
+    const res = await POST(req as any, { params: Promise.resolve({ id: 'sess-no-tg' }) } as any)
+
+    expect(res.status).toBeLessThan(500)
+    expect(mocks.logActivity).toHaveBeenCalled()
+    const lastCall = mocks.logActivity.mock.calls[mocks.logActivity.mock.calls.length - 1]
+    const detail = lastCall[5] as Record<string, unknown>
+    expect(detail.tg_ref).toBeUndefined()
+    expect(detail.chatId).toBeUndefined()
+    expect(detail.topicId).toBeUndefined()
+    // Original detail fields still present.
+    expect(detail.session_key).toBe('sess-no-tg')
+    expect(detail.action).toBe('monitor')
+  })
 })
