@@ -21,7 +21,7 @@ import {
   ModelsTab,
   CreateAgentModal
 } from './agent-detail-tabs'
-import { formatModelName, formatProviderName, formatProviderRoute, formatFullProviderModel, buildTaskStatParts } from '@/lib/agent-card-helpers'
+import { formatModelName, formatProviderName, formatProviderRoute, formatFullProviderModel, classifyProviderTier, tierLabel, buildTaskStatParts } from '@/lib/agent-card-helpers'
 import { AgentEvalCard } from '@/components/panels/agent-eval-card'
 import { AvatarGalleryPicker } from '@/components/ui/avatar-gallery-picker'
 import { readPersonaFromAgentConfig, buildAvatarConfigPatch } from '@/lib/avatar-gallery'
@@ -424,6 +424,7 @@ export function AgentSquadPanelPhase3() {
               const providerName = formatProviderName(agent.config)
               const providerRoute = formatProviderRoute(agent.config)
               const fullProviderModel = formatFullProviderModel(agent.config)
+              const providerTier = classifyProviderTier(agent.config)
               // Phase 5.1: build a routing-chain segment shown next to the role.
               // Examples:
               //   anthropic/claude-opus-4-5 → "anthropic · claude-opus-4-5"
@@ -475,6 +476,19 @@ export function AgentSquadPanelPhase3() {
                             <> · <span className="font-mono text-muted-foreground/80">{modelName}</span></>
                           )}
                         </p>
+                        {modelName && providerTier !== 'unknown' && (
+                          <span
+                            className={`mt-0.5 inline-flex items-center rounded px-1.5 py-0 text-[10px] uppercase tracking-wide ${
+                              providerTier === 'free'
+                                ? 'bg-emerald-500/15 text-emerald-300'
+                                : 'bg-amber-500/15 text-amber-300'
+                            }`}
+                            title={tierLabel(providerTier)}
+                            aria-label={tierLabel(providerTier)}
+                          >
+                            {providerTier === 'free' ? 'free' : 'paid'}
+                          </span>
+                        )}
                       </div>
                     </div>
 
