@@ -92,3 +92,19 @@ Mitigations Mission Control still needs:
 - Choosing among (a) / (b) / (c) is a UX/security trade-off design call; this audit does **not** decide it. The implementation work is tracked as **Phase 1.7** in `docs/audit/MISSION_CONTROL_ROADMAP.md`.
 
 This update closes Phase 1.6 (the classification question). It does not close the storage migration; that work is Phase 1.7.
+
+---
+
+## Update — Phase 1.7 (sessionStorage migration, PR #19, 2026-04-27)
+
+Đào msg 1552 picked **option (b) `sessionStorage`**. PR #19 rewrites `src/lib/device-identity.ts`'s storage helpers:
+
+- `cacheDeviceToken` writes `sessionStorage` only.
+- `getCachedDeviceToken` reads `sessionStorage`; on every call it also drops any legacy `localStorage['mc-device-token']` entry **without promoting** the value (any token whose lifecycle started in the wrong scope cannot continue under the new scope; the next handshake re-mints).
+- `clearDeviceIdentity` removes the token from both stores defensively.
+- All storage operations are wrapped in `try/catch` (per Đào msg 1555 refinement #2) so private/lockdown browsing modes degrade to `null` reads or no-op writes rather than crashing the auth flow.
+- A new source-discipline test (`src/lib/__tests__/device-token-storage-source-discipline.test.ts`) pins the invariants statically: production code must not call `localStorage.setItem` for the token, may only call `localStorage.getItem` paired with a same-block `removeItem` (legacy cleanup), and the cache helpers must use `sessionStorage`.
+
+Threat-model delta: the persisted-XSS, cross-tab, and offline-disk-dump exfil paths are **closed**. Same-tab same-origin JS reading `sessionStorage` while the page is open is the **residual** — mitigated by option (c) `httpOnly` BFF cookie if it ever becomes a real incident, but deferred for now because it requires re-architecting the gateway connect proxy.
+
+Phase 1.7 closes here. Phase 1.6 (classification) was already closed by PR #18.

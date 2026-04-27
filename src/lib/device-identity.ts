@@ -11,9 +11,13 @@ const log = createClientLogger('DeviceIdentity')
 /**
  * Ed25519 device identity for OpenClaw gateway protocol v3 challenge-response.
  *
- * Key material lives in two places:
+ * Key material lives in three places:
  *   - non-extractable CryptoKey persisted in IndexedDB (private key, post-#574)
- *   - localStorage (deviceId, public key, optional cached device token, gateway URL)
+ *   - localStorage (deviceId, public key, gateway URL)
+ *   - sessionStorage (cached device token, post-Phase 1.7) — bearer-equivalent
+ *     per Phase 1.6 classification, so it is kept out of localStorage to close
+ *     the persisted-XSS exfil path. See docs/audit/PR18_DEVICE_TOKEN_BEARER_CLASSIFICATION.md
+ *     and docs/audit/PR19_PHASE_1_7_DEVICE_TOKEN_SESSIONSTORAGE.md.
  *
  * Falls back gracefully when Ed25519 is unavailable (older browsers) — the
  * handshake proceeds without device identity (auth-token-only mode). When the
@@ -288,25 +292,85 @@ export async function signPayload(
   }
 }
 
-/** Reads cached device token from localStorage (returned by gateway on successful connect). */
-export function getCachedDeviceToken(): string | null {
-  return localStorage.getItem(STORAGE_DEVICE_TOKEN)
-}
-
-/** Caches the device token returned by the gateway after successful connect. */
-export function cacheDeviceToken(token: string): void {
-  localStorage.setItem(STORAGE_DEVICE_TOKEN, token)
+/**
+ * Best-effort accessors for the two web-storage backends.
+ *
+ * Returns null for either store when the runtime can't access it: SSR
+ * (no `window`), private browsing modes that throw on storage access,
+ * disabled storage in Safari/Firefox lockdown, etc. Callers must always
+ * null-check.
+ */
+function _safeStorage(): { local: Storage | null; session: Storage | null } {
+  if (typeof window === 'undefined') return { local: null, session: null }
+  let local: Storage | null = null
+  let session: Storage | null = null
+  try { local = window.localStorage } catch { /* storage disabled */ }
+  try { session = window.sessionStorage } catch { /* storage disabled */ }
+  return { local, session }
 }
 
 /**
- * Removes all device identity data from both stores (for troubleshooting and
+ * Reads cached device token from sessionStorage (returned by gateway on
+ * successful connect). The token is bearer-equivalent on the gateway (per
+ * Phase 1.6 classification) so it lives in sessionStorage instead of
+ * localStorage to close the persisted-XSS exfil path. Tab close ⇒ token
+ * gone ⇒ next handshake re-mints a fresh token.
+ *
+ * On read, also clears any legacy `localStorage['mc-device-token']` left by
+ * pre-Phase-1.7 builds. The legacy value is NOT promoted into sessionStorage
+ * — we force a fresh handshake instead, so any token whose lifecycle started
+ * in the wrong scope cannot continue under the new scope.
+ *
+ * All storage operations are best-effort; a thrown access error degrades to
+ * `null` (or no-op write) rather than crashing the auth flow.
+ */
+export function getCachedDeviceToken(): string | null {
+  const { local, session } = _safeStorage()
+  if (local) {
+    try {
+      if (local.getItem(STORAGE_DEVICE_TOKEN) !== null) {
+        local.removeItem(STORAGE_DEVICE_TOKEN)
+      }
+    } catch { /* legacy cleanup is best-effort */ }
+  }
+  if (!session) return null
+  try {
+    return session.getItem(STORAGE_DEVICE_TOKEN)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Caches the device token returned by the gateway after successful connect.
+ * Writes to sessionStorage only — see {@link getCachedDeviceToken} for the
+ * Phase 1.6 / 1.7 rationale. Best-effort: a thrown storage error is a no-op.
+ */
+export function cacheDeviceToken(token: string): void {
+  const { session } = _safeStorage()
+  if (!session) return
+  try {
+    session.setItem(STORAGE_DEVICE_TOKEN, token)
+  } catch { /* token cache write is best-effort */ }
+}
+
+/**
+ * Removes all device identity data from every store (for troubleshooting and
  * for the existing token-only fallback retry path in websocket.ts).
+ * Best-effort across all branches.
  */
 export async function clearDeviceIdentity(): Promise<void> {
-  localStorage.removeItem(STORAGE_DEVICE_ID)
-  localStorage.removeItem(STORAGE_PUBKEY)
-  localStorage.removeItem(STORAGE_PRIVKEY_LEGACY)
-  localStorage.removeItem(STORAGE_DEVICE_TOKEN)
+  const { local, session } = _safeStorage()
+  if (local) {
+    try { local.removeItem(STORAGE_DEVICE_ID) } catch {}
+    try { local.removeItem(STORAGE_PUBKEY) } catch {}
+    try { local.removeItem(STORAGE_PRIVKEY_LEGACY) } catch {}
+    // Defense — pre-Phase-1.7 builds may have left a copy here.
+    try { local.removeItem(STORAGE_DEVICE_TOKEN) } catch {}
+  }
+  if (session) {
+    try { session.removeItem(STORAGE_DEVICE_TOKEN) } catch {}
+  }
 
   try {
     const store = getStore()
