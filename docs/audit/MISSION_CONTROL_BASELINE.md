@@ -784,7 +784,51 @@ This means: if Mission Control is NOT migrating localStorage privkey → Indexed
 - Is `tokenOnlyFallbackRef.current` stuck `true` from an earlier session — short-circuiting the device-identity branch?
 - Is the browser's secure context / `window.crypto.subtle` available so `getOrCreateDeviceIdentity()` can complete?
 
-**#574 PR #5 sub-task 5a status:** PIVOTED. Path B (parallel test gateway in "device mode") is CANCELLED — that mode does not exist and would not change behavior even if it did. The verification work moves to browser-side inspection of MC's existing 18789 connection. The reference doc `docs/audit/PR5_PATH_B_REFERENCE.md` is retained for future parallel-env work that legitimately needs an isolated MC profile, but it is NOT a path to verifying #574.
+**#574 PR #5 sub-task 5a status:** PIVOTED. Path B (parallel test gateway in "device mode") is CANCELLED — that mode does not exist and would not change behavior even if it did. The verification work moves to browser-side inspection of MC's existing 18789 connection. The reference doc `docs/audit/PR5_PATH_B_REFERENCE.md` is retained for future parallel-env work that legitimately needs an isolated MC profile, but it is NOT a path to verifying #574. Verification results are captured in the section immediately below.
+
+**#574 + #608 PR #5 sub-task 5a verification results (2026-04-27, browser instrumentation via Camofox + source review):**
+
+*#574 fresh device-identity creation + persistence — VERIFIED*
+
+Camofox `userId="mai-mc-instrument"` (fresh profile) → login `http://127.0.0.1:3000` as admin → dashboard. Browser-side state captured via `POST /tabs/:id/evaluate`:
+
+- `window.isSecureContext === true`, `!!window.crypto.subtle === true`. Env supports Ed25519 keypair generation + IDB write.
+- Pre-login storage: `localStorage = {}`, `indexedDB = []`. Profile clean, no legacy state.
+- Post-login: `localStorage` stays empty (no `mc-device-privkey`); `indexedDB` has database `mc-device-identity` v1, store `keys`, count 1.
+- After full page reload: same state persists — the IDB record is reused, no fresh-creation re-run.
+- Indirect WS handshake evidence: gateway-side `~/.openclaw/devices/paired.json` gained a new MC web entry (`clientId="openclaw-control-ui"`, `clientMode="ui"`, `platform="web"`, `scope="operator.admin"`) at the login timestamp. Per Đào's decision rule (Telegram msg 1273), gateway pairing implies the outgoing `connect` frame carried a `device` field, confirming that `getOrCreateDeviceIdentity()` reached the IDB-backed path and the handshake completed.
+
+Direct WS frame capture was not possible because Camofox v1.6.2 has no init-script API and MC's `/login → /` is a hard navigation, so a `WebSocket` wrapper installed via `evaluate` on `/login` is lost before the dashboard's WS connects. The gateway-pairing side-effect is the strongest available proxy evidence.
+
+*#574 legacy localStorage → IDB migration — PARTIALLY EXERCISED, NOT VERIFIED END-TO-END*
+
+A throwaway Ed25519 keypair was generated in-browser (`extractable: true` for the test fixture only), exported as PKCS8 + raw + sha256 hex, and written into `localStorage` as `mc-device-id`, `mc-device-pubkey`, `mc-device-privkey` after deleting the IDB database. After reload + 9s settle:
+
+- All three legacy localStorage keys remained — `mc-device-privkey` was NOT removed.
+- `mc-device-identity` IDB had 1 record again.
+- Gateway `paired.json` did NOT gain a new entry for the seeded `deviceId`.
+
+This pattern matches the "import + verify-sign #1 + IDB store all succeeded, but verify-read or verify-sign-#2 on the persisted CryptoKey failed → throw `DeviceIdentityUnavailableError`" branch of `migrateLegacyIfPresent` (`src/lib/device-identity.ts:184-216`), which by design does NOT delete the legacy localStorage entry. Without a captured console error message (no early console wrapper means the error message was lost), the observation is consistent with either:
+
+- a fixture mismatch — a browser-generated CryptoKey round-tripped through IDB structured-clone may diverge from what real upgrade-path installs persisted; or
+- a latent app bug in the verify-read / verify-sign-#2 step.
+
+Per Đào (Telegram msg 1291 line 5), this is classified as a fixture issue rather than an app bug, pending stronger evidence. End-to-end migration verification remains a follow-up — it needs either a real legacy-install fixture from an upgrade-path user, or pre-page instrumentation (service worker, init script, or a future Camofox init-script feature) that can capture the exact `DeviceIdentityUnavailableError` reason.
+
+*#608 task-dispatch uses native WS, no CLI shell-out — VERIFIED*
+
+Three layers of evidence:
+
+1. *Live process observation.* During the entire instrumentation session (login → migration sub-test → cleanup), `pgrep -af "openclaw gateway call"` returned empty. Only the pre-existing long-running `openclaw-gateway` daemon was observed. No `openclaw gateway call agent` subprocess was ever spawned by Mission Control.
+2. *Source review of `src/lib/task-dispatch.ts:680-705`.* New-session dispatch uses `await callGatewayAgentForText(gatewayAgentId, prompt, { timeoutMs, idempotencyKey, model })` — native WS via `src/lib/openclaw-gateway-ws.ts`. Existing-session dispatch uses `chat.send` over the same WS. The inline comment on line 690 documents the change: *"Native WS replaces the legacy `runOpenClaw([...gateway call agent --expect-final...])` pattern, which fails with `spawn openclaw ENOENT` whenever Mission Control is deployed in a container that doesn't bundle the openclaw CLI binary."* Grepping `child_process | spawn | execFile | exec` across `src/` confirms `task-dispatch.ts` contains no subprocess calls.
+3. *Regression test passing.* `src/lib/__tests__/task-dispatch-source-discipline.test.ts` runs four assertions: (a) `task-dispatch.ts` must not contain `runOpenClaw([..., 'gateway', 'call', 'agent', ...])`, (b) must not use `--expect-final`, (c) `openclaw-gateway-ws.ts` exports the required wrapper API, (d) the legacy `runOpenClaw` import is preserved for non-#608 commands. Ran `npx vitest run` → 4/4 PASS in ~1.3s.
+
+Caveat: live UI dispatch via the Tasks page was not exercised because the Camofox tab's gateway WS dropped to "GW Offline" (likely a side-effect of the migration sub-test perturbations and cross-origin localStorage isolation between an unrelated `localhost:3000` browsing session and the `127.0.0.1:3000` instrumentation session). Source + regression test layers are sufficient for the anti-pattern claim — a live dispatch test would only re-confirm the negative.
+
+*Separate findings (out of scope for #574 / #608, candidate follow-up tickets):*
+
+- *Next.js hydration nonce mismatch* (Next 16.1.6 Turbopack, "stale" marker). SSR renders `<script nonce="">` while client hydrates with a populated nonce, e.g. `<script nonce="pwMoLOKtKMblm7P4+Z1rRw==">`. Touch points: `src/lib/csp.ts` (CSP builder), `src/proxy.ts` (middleware nonce generation), `src/app/layout.tsx:91-101` (header read + `<Script nonce={nonce}>`). Surfaces as a single dev-overlay console error; does not block app load or login.
+- *`src/app/api/notifications/deliver/route.ts:82` still uses legacy CLI shell-out* (`runOpenClaw(['gateway', 'call', 'agent', '--params', '--json'])`) for notification delivery. Per Đào's narrow-scope caveat (msg 1078), this path is intentionally NOT covered by #608, but it carries the same `spawn openclaw ENOENT` failure mode in containerized deployments and is a reasonable follow-up "notifications-delivery WS migration" candidate.
 
 **Operational findings (NOT defects):**
 
