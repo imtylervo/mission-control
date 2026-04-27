@@ -96,9 +96,18 @@ export default async function RootLayout({
     <html lang={locale} dir={locale === 'ar' ? 'rtl' : 'ltr'} className="dark" suppressHydrationWarning>
       <head>
         {/* Blocking script to set 'dark' class before first paint, preventing FOUC.
-            Content is a static string literal — no user input, no XSS vector. */}
+            Content is a static string literal — no user input, no XSS vector.
+
+            suppressHydrationWarning: the `nonce` attribute is generated per
+            request from the proxy-set CSP and may be re-applied by Next.js
+            during dev-mode hydration with a different value than the SSR'd
+            attribute (see vercel/next.js#89754). The script *content* is
+            unchanged; only the `nonce` attribute can diverge. Suppressing
+            here narrowly avoids a noisy console error on dev page loads
+            without weakening the CSP — `nonce={nonce}` stays. */}
         <script
           nonce={nonce}
+          suppressHydrationWarning
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem('theme')||'void';var light=['light','paper'];if(light.indexOf(t)===-1)document.documentElement.classList.add('dark')}catch(e){}})()`,
           }}
