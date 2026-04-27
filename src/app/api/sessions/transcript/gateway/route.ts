@@ -5,7 +5,7 @@ import { requireRole } from '@/lib/auth'
 import { config } from '@/lib/config'
 import { logger } from '@/lib/logger'
 import { parseGatewayHistoryTranscript, parseJsonlTranscript } from '@/lib/transcript-parser'
-import { callOpenClawGateway } from '@/lib/openclaw-gateway'
+import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 
 /**
  * GET /api/sessions/transcript/gateway?key=<session-key>&limit=50
@@ -36,15 +36,19 @@ export async function GET(request: NextRequest) {
 
   try {
     try {
-      // PR #13 / 1.3d: this callsite is INTENTIONALLY retained on the legacy
-      // CLI wrapper `callOpenClawGateway` because the WS-side gateway
-      // protocol does not (as of 2026-04-27) export `chat.history` per
-      // Đào's check (msg 1336). Migration deferred to a separate ticket
-      // once the WS method is added or an alternative read path is chosen.
-      const history = await callOpenClawGateway<{ messages?: unknown[] }>(
+      // PR #21 / Phase 1.4: migrated from `callOpenClawGateway` to
+      // `callOpenClawGatewayWS`. The OpenClaw 2026.4.24 SDK exposes
+      // `ChatHistoryParamsSchema` at
+      // `plugin-sdk/src/gateway/protocol/schema/logs-chat.d.ts:15-18`
+      // ({ sessionKey, limit?, maxChars? }) and validateChatHistoryParams at
+      // `plugin-sdk/src/gateway/protocol/index.d.ts:876`, so the WS path is
+      // a drop-in replacement for the CLI wrapper. The disk-side fallback
+      // below remains as a defensive read path when the WS handshake fails
+      // (e.g. unpaired containerised MC where the gateway is unreachable).
+      const history = await callOpenClawGatewayWS<{ messages?: unknown[] }>(
         'chat.history',
         { sessionKey, limit },
-        15000,
+        { timeoutMs: 15000 },
       )
       const liveMessages = parseGatewayHistoryTranscript(Array.isArray(history?.messages) ? history.messages : [], limit)
       if (liveMessages.length > 0) {
