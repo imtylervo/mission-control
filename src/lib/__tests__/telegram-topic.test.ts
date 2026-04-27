@@ -4,6 +4,7 @@ import {
   parseTelegramTopicRef,
   buildTelegramDeepLink,
   sanitizeTelegramPayloadForLog,
+  extractTelegramContextFromHeaders,
 } from '@/lib/telegram-topic'
 
 const TYLER_AI_TEAM = -1003656139138
@@ -164,5 +165,72 @@ describe('sanitizeTelegramPayloadForLog', () => {
       topicId: 1,
       messageId: 42,
     })
+  })
+})
+
+describe('extractTelegramContextFromHeaders', () => {
+  function mkHeaders(map: Record<string, string>) {
+    return {
+      get(name: string) {
+        const lower = name.toLowerCase()
+        for (const [k, v] of Object.entries(map)) {
+          if (k.toLowerCase() === lower) return v
+        }
+        return null
+      },
+    }
+  }
+
+  it('extracts full context when all 3 headers are present', () => {
+    const ctx = extractTelegramContextFromHeaders(
+      mkHeaders({
+        'X-Telegram-Chat-Id': '-1003656139138',
+        'X-Telegram-Topic-Id': '1',
+        'X-Telegram-Message-Id': '42',
+      }),
+    )
+    expect(ctx).toEqual({
+      tg_ref: 'tg:-1003656139138:1:42',
+      chatId: -1003656139138,
+      topicId: 1,
+      messageId: 42,
+    })
+  })
+
+  it('returns context without messageId when message-id header is missing', () => {
+    const ctx = extractTelegramContextFromHeaders(
+      mkHeaders({
+        'X-Telegram-Chat-Id': '-1003656139138',
+        'X-Telegram-Topic-Id': '1',
+      }),
+    )
+    expect(ctx).toEqual({
+      tg_ref: 'tg:-1003656139138:1',
+      chatId: -1003656139138,
+      topicId: 1,
+    })
+  })
+
+  it('returns null when chat-id header is absent', () => {
+    expect(
+      extractTelegramContextFromHeaders(mkHeaders({ 'X-Telegram-Topic-Id': '1' })),
+    ).toBeNull()
+  })
+
+  it('returns null when topic-id header is absent', () => {
+    expect(
+      extractTelegramContextFromHeaders(mkHeaders({ 'X-Telegram-Chat-Id': '-1003656139138' })),
+    ).toBeNull()
+  })
+
+  it('returns null for malformed numeric headers', () => {
+    expect(
+      extractTelegramContextFromHeaders(
+        mkHeaders({
+          'X-Telegram-Chat-Id': 'abc',
+          'X-Telegram-Topic-Id': '1',
+        }),
+      ),
+    ).toBeNull()
   })
 })

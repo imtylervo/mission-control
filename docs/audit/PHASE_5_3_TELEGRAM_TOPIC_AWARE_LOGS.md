@@ -46,14 +46,52 @@ Four exports, all pure (no DB / no I/O / no fetch):
 - **`buildTelegramDeepLink`** (5): supergroup root link / anchor-message link / non-supergroup positive id / non-`-100` prefix / non-integer.
 - **`sanitizeTelegramPayloadForLog`** (5): snake-case shape with secrets — assert tg_ref correct AND none of the secrets present in JSON-stringified output; camelCase shape; missing-message-id case; null/missing/wrong-shape input rejection; string-typed numeric coercion.
 
-## Why this PR is a "library + audit", not a wire-in PR
+## Wire-in: `POST /api/sessions/[id]/control` (per Đào msg 1699 review)
 
-The roadmap line is "link sessions/actions back to Telegram group/topic where possible." There are two halves:
+Initial draft of this PR shipped helpers-only and deferred all wire-ins. Đào's review correctly pushed back: "wire the sanitizer/topic ref into at least one real session/action logging surface." So PR #40 was extended in-place to wire into one representative route.
 
-1. **Library half (this PR)** — provide the token format, the parser, the URL builder, and the privacy sanitizer. These have to land first so any wire-in is predictable.
-2. **Wire-in half (deferred follow-ups, one per surface)** — extend the relevant route's `db_helpers.logActivity(...)` calls to read the inbound Telegram context (request headers / body / X-Telegram-* shim) and pass the sanitized output through to the log row. Each surface (`agents/message`, `sessions/control`, `tasks/POST`, `pipelines/run`) has its own input shape and request lifecycle and benefits from a focused review per route.
+### `src/lib/telegram-topic.ts` — added `extractTelegramContextFromHeaders`
 
-This is documented here so the deferral is intentional, not a "TODO" left behind. Đào's instruction said "where possible" — the library is the precondition; per-route wiring is a follow-up surface that lands one-by-one in subsequent PRs (or as a single batched follow-up if Đào prefers).
+Small helper that reads `X-Telegram-Chat-Id`, `X-Telegram-Topic-Id`, `X-Telegram-Message-Id` headers via the standard `headers.get(name)` accessor used by Next.js `NextRequest` / `Request`. Routes the values through the existing `sanitizeTelegramPayloadForLog` so the output is the same IDs-only record the dashboard already understands. Returns `null` when chat-id or topic-id is absent — graceful fallback for non-Telegram clients (CLI, dashboard).
+
+### `src/app/api/sessions/[id]/control/route.ts` — wire-in
+
+Added a single helper call before the existing `db_helpers.logActivity(...)` invocation:
+
+```ts
+const tgCtx = extractTelegramContextFromHeaders(request.headers)
+
+db_helpers.logActivity(
+  'session_control', 'session', 0, auth.user.username,
+  `Session ${action}: ${id}`,
+  tgCtx ? { session_key: id, action, ...tgCtx } : { session_key: id, action }
+)
+```
+
+When the request carries `X-Telegram-*` headers (sent by the Telegram bot bridge), the activity-log row's `detail` JSON now includes `tg_ref` + `chatId` + `topicId` + `messageId`. When the headers are absent (CLI, dashboard, anyone else), the row's `detail` is byte-identical to before this PR — no regression.
+
+### Why `sessions/[id]/control` first
+
+It is the smallest representative route the umbrella source-discipline test (PR #35) and the runtime container-no-cli test (PR #37) already cover, so its surface is well-understood and the wire-in does not cascade into other code paths. Other migrated routes (`agents/message`, `tasks/POST`, `pipelines/run`) follow the same shape and can be wired in subsequent focused PRs reusing this same `extractTelegramContextFromHeaders` helper.
+
+### Tests added for the wire-in
+
+- 5 cases on `extractTelegramContextFromHeaders` in `telegram-topic.test.ts` (full / partial / missing chat-id / missing topic-id / malformed).
+- 2 cases on the actual route handler in `container-no-cli-smoke.test.ts`:
+  - With `X-Telegram-*` headers → assert `detail.tg_ref` is the expected `tg:-1003656139138:1:42` AND assert `JSON.stringify(detail)` does NOT contain `'PRIVATE'`, `'username'`, `'photo'` — privacy invariant pinned at the route boundary.
+  - Without headers → assert `detail.tg_ref` is `undefined`, original `session_key` + `action` fields still present.
+
+The route-level tests live in `container-no-cli-smoke.test.ts` (renaming would touch unrelated history) — that file was the natural home because its mock plumbing already covers the same route handler under a different scenario (ENOENT / no-CLI). New tests follow the same `vi.hoisted` mock pattern.
+
+### Total test count this PR
+
+- `telegram-topic.test.ts`: 26 cases (was 21; +5 for the new helper).
+- `container-no-cli-smoke.test.ts`: 5 cases (was 3; +2 for the wire-in).
+- Combined: **31 passing** (was 24).
+
+### Other surfaces not yet wired
+
+`agents/message`, `tasks/POST`, `pipelines/run`, `agents/[id]/wake` all have their own activity-log calls and would benefit from the same wire-in. Each is its own focused follow-up PR, reusing the helper added here. Audit-trail completeness is incremental — this PR proves the shape is correct and the privacy invariant holds at the route boundary; subsequent PRs replicate the pattern.
 
 ## Privacy invariant (Đào msg 1697)
 

@@ -180,3 +180,36 @@ export function sanitizeTelegramPayloadForLog(
   if (msgClean !== undefined) out.messageId = msgClean
   return out
 }
+
+/**
+ * Phase 5.3 wire-in helper — read the Telegram context for a given
+ * inbound HTTP request from `X-Telegram-Chat-Id`, `X-Telegram-Topic-Id`,
+ * `X-Telegram-Message-Id` headers and return the sanitized record (or
+ * `null` if the headers are absent / malformed).
+ *
+ * The header form is the contract surface for activity-log wire-ins:
+ * Mission Control's Telegram bot bridge sends those headers when it
+ * forwards an action originating from the chat. Other clients (CLI,
+ * dashboard) that don't carry Telegram context just don't send the
+ * headers, and `null` is the graceful fallback — no extra `tg_ref` is
+ * stamped on the log row.
+ *
+ * Headers are case-insensitive per HTTP spec; the helper accepts the
+ * standard `request.headers.get(name)` accessor used by Next.js
+ * `NextRequest` and `Request`.
+ */
+export function extractTelegramContextFromHeaders(headers: {
+  get(name: string): string | null
+}): { tg_ref: string; chatId: number; topicId: number; messageId?: number } | null {
+  const chatRaw = headers.get('x-telegram-chat-id')
+  const topicRaw = headers.get('x-telegram-topic-id')
+  const msgRaw = headers.get('x-telegram-message-id')
+
+  if (!chatRaw || !topicRaw) return null
+
+  return sanitizeTelegramPayloadForLog({
+    chat_id: chatRaw,
+    message_thread_id: topicRaw,
+    message_id: msgRaw ?? undefined,
+  })
+}

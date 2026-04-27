@@ -4,6 +4,7 @@ import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 import { db_helpers } from '@/lib/db'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { extractTelegramContextFromHeaders } from '@/lib/telegram-topic'
 
 // Only allow alphanumeric, hyphens, and underscores in session IDs
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]+$/
@@ -47,13 +48,18 @@ export async function POST(
       result = await callOpenClawGatewayWS('sessions.send', { key: id, message }, { timeoutMs: 10_000 })
     }
 
+    // Phase 5.3 — capture Telegram chat/topic context (IDs only) when the
+    // request originated from the Telegram bot bridge. Headers absent →
+    // tgCtx is null and the activity-log row is unchanged.
+    const tgCtx = extractTelegramContextFromHeaders(request.headers)
+
     db_helpers.logActivity(
       'session_control',
       'session',
       0,
       auth.user.username,
       `Session ${action}: ${id}`,
-      { session_key: id, action }
+      tgCtx ? { session_key: id, action, ...tgCtx } : { session_key: id, action }
     )
 
     return NextResponse.json({
