@@ -66,6 +66,7 @@ The phase numbers match `docs/audit/MISSION_CONTROL_ROADMAP.md`. A phase that do
 | --- | --- | --- |
 | 6.1 | [PHASE_6_1_DOCUMENTATION_PASS.md](PHASE_6_1_DOCUMENTATION_PASS.md) | Documentation pass — phase audit summary aggregator + minimal `README.md` pointer + scoped check that the summary stays in sync with the audit-doc set |
 | 6.2 | [PHASE_6_2_UPSTREAM_PR_STRATEGY.md](PHASE_6_2_UPSTREAM_PR_STRATEGY.md) | Upstream/fork split strategy — every Phase 1–6.1 deliverable classified as upstream-ready / upstream-with-conversation / fork-only, with PR sequencing in 4 waves |
+| 6.3 | [PHASE_6_3_FINAL_ACCEPTANCE.md](PHASE_6_3_FINAL_ACCEPTANCE.md) | Final acceptance pass — vitest 1256/1256, tsc clean, doctor + security scripts run to completion with results matching Phase 2.4 accepted-exception classification, browser smoke deferred to CI, residuals documented. **v0 acceptance gate: GREEN.** |
 
 ## Operational invariants pinned by the test suite
 
