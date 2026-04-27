@@ -29,12 +29,14 @@ Each callsite was opened to confirm (a) what gateway method or CLI command it in
 
 | Category | Count | Files |
 | --- | ---: | ---: |
-| `runOpenClaw` direct callsites | 17 | 14 |
-| `callOpenClawGateway` callsites | 14 | 8 |
+| `runOpenClaw` direct callsites | 21 | 15 |
+| `callOpenClawGateway` callsites | 17 | 8 |
 | `callOpenClawGatewayWS` / `callGatewayAgentForText` (already migrated) | 6 | 2 |
 | Other `child_process` subprocess (tmux, git, brew, op, gws, etc. — out of scope) | ~25 | many |
 
-Note: `callOpenClawGateway` itself shell-outs (`src/lib/openclaw-gateway.ts:45` calls `runOpenClaw(['gateway', 'call', method, '--timeout', '--params', '--json'])`), so all 14 `callOpenClawGateway` callsites are also CLI shell-out under the hood. Migrating them means swapping for `callOpenClawGatewayWS`.
+Counts use `grep -rEn 'runOpenClaw\s*\(' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__'` (which matches actual call expressions, excluding the export declaration in `command.ts`, dynamic-import bindings without an immediate call, and JSDoc / inline comment references). The 21 `runOpenClaw` figure breaks down as: 3 Tier 1 + 3 Tier 2 + 1 wrapper (`openclaw-gateway.ts:45`) + 1 Needs Design + 13 Keep CLI direct calls.
+
+Note: `callOpenClawGateway` itself shell-outs (`src/lib/openclaw-gateway.ts:45` calls `runOpenClaw(['gateway', 'call', method, '--timeout', '--params', '--json'])`), so all 17 `callOpenClawGateway` callsites are also CLI shell-out under the hood. Migrating them means swapping for `callOpenClawGatewayWS`.
 
 ## Tier 1 — `gateway call agent` shell-out (HIGH RISK, same anti-pattern as #608)
 
@@ -62,7 +64,7 @@ Migration: single WS method `sessions.send` invoked via `callOpenClawGatewayWS('
 
 ## Tier 3 — `callOpenClawGateway` wrapper swap (MEDIUM RISK, broadest blast radius)
 
-Mechanical: replace the wrapper import + call site by `callOpenClawGatewayWS`. Same `(method, params, timeoutMs) → Promise<T>` shape, same return-type generics. After this tier completes, `src/lib/openclaw-gateway.ts` becomes dead code and can be deleted (with `parseGatewayJsonOutput` ported into the WS module if anything still needs it — quick scan suggests it does not, since the WS frames are already JSON).
+17 callsites across 8 files. Mechanical: replace the wrapper import + call site by `callOpenClawGatewayWS`. Same `(method, params, timeoutMs) → Promise<T>` shape, same return-type generics. After this tier completes, `src/lib/openclaw-gateway.ts` becomes dead code and can be deleted (with `parseGatewayJsonOutput` ported into the WS module if anything still needs it — quick scan suggests it does not, since the WS frames are already JSON).
 
 | File:line | Method invoked |
 | --- | --- |
@@ -90,18 +92,25 @@ The 122-second `web.login.wait` is the longest-running of these and the only one
 
 These are not migration candidates — they invoke real CLI subcommands that have no gateway RPC equivalent. They stay on `runOpenClaw`. Some still carry the same `spawn openclaw ENOENT` failure mode in containers; addressing that is a packaging concern (ship the CLI in the image, or document it as a deployment requirement), not a WS-migration concern.
 
+13 direct call lines:
+
 | File:line | Command |
 | --- | --- |
-| `src/lib/openclaw-doctor-cache.ts:56` | doctor cache (uses injected runner, default `runOpenClaw`) |
 | `src/app/api/agents/route.ts:226` | `agents add <id> --workspace <path> --non-interactive` |
 | `src/app/api/agents/[id]/route.ts:237` | `agents delete <id> --force` |
-| `src/app/api/agents/[id]/wake/route.ts` (sessions_send line — Tier 2, not here) | — |
 | `src/app/api/openclaw/version/route.ts:25` | `--version` |
-| `src/app/api/openclaw/update/route.ts:16, 27, 34` | `--version` (probe), `update --channel stable`, `--version` (re-probe) |
-| `src/app/api/openclaw/doctor/route.ts:71, 75, 91` | `doctor --fix`, `sessions cleanup --all-agents --enforce --fix-missing`, `doctor` |
+| `src/app/api/openclaw/update/route.ts:16` | `--version` (pre-update probe) |
+| `src/app/api/openclaw/update/route.ts:27` | `update --channel stable` |
+| `src/app/api/openclaw/update/route.ts:34` | `--version` (post-update re-probe) |
+| `src/app/api/openclaw/doctor/route.ts:71` | `doctor --fix` |
+| `src/app/api/openclaw/doctor/route.ts:75` | `sessions cleanup --all-agents --enforce --fix-missing` |
+| `src/app/api/openclaw/doctor/route.ts:91` | `doctor` (post-fix re-check) |
 | `src/app/api/backup/route.ts:62` | `backup create --output <BACKUP_DIR>` |
 | `src/app/api/status/route.ts:409` | `--version` |
 | `src/app/api/diagnostics/route.ts:59` | `--version` |
+| `src/app/api/channels/route.ts:178` | `channels status --json [--probe]` (CLI fallback when gateway is unreachable, intentional belt-and-braces — keep) |
+
+Plus one indirect callsite via dependency-injected runner (does not appear in the `runOpenClaw\s*\(` grep but is effectively a Keep-CLI consumer): `src/lib/openclaw-doctor-cache.ts:56` defaults `runner = opts.runner ?? runOpenClaw`, executed when the doctor cache invokes the runner.
 
 ## Needs design (not migrated, not deferred)
 
@@ -113,22 +122,23 @@ These are not migration candidates — they invoke real CLI subcommands that hav
 
 | PR | Scope | Risk | Est. LOC |
 | --- | --- | ---: | ---: |
-| **1.3a (this PR)** | docs-only inventory file | none | +250 |
+| **1.3a (this PR)** | docs-only inventory file | none | +138 |
 | 1.3b | sessions_send unification — agents/wake + agents/message + tasks/broadcast (Tier 2) | low | ~30 |
 | 1.3c | `gateway call agent` migration — notifications/deliver + chat/messages × 2 (Tier 1, including `agent.wait`) | medium | ~80 |
-| 1.3d | `callOpenClawGateway` wrapper swap — Tier 3, then delete `src/lib/openclaw-gateway.ts` | medium | ~150 |
+| 1.3d | `callOpenClawGateway` wrapper swap — Tier 3 (17 callsites), then delete `src/lib/openclaw-gateway.ts` | medium | ~150 |
 | Defer | KEEP CLI block | n/a | 0 |
 | Future ticket | `pipelines/run` design | n/a | TBD |
 
 **Sequencing rationale:** 1.3b first because it is the smallest mechanical change with no behavioural risk, and it gives the regression-test pattern its second test case (after PR #3's `task-dispatch-source-discipline.test.ts`). 1.3c next because it closes the original `notifications/deliver` follow-up Đào called out in the PR #5 sub-task 5a verification, and because Tier 1 is the highest-impact failure mode in containers. 1.3d last because it is the largest blast radius and benefits from the WS path being battle-tested by the prior two PRs.
 
-## Evidence (grep output summary)
+## Evidence (grep commands and counts)
 
-Run from repo root on commit `15c377f`:
+Run from the repo root on commit `15c377f`:
 
-- `grep -rn 'runOpenClaw\b' --include='*.ts' --include='*.tsx' src/ | grep -v __tests__ | wc -l` → 17 unique callsites (some files have 2+).
-- `grep -rn 'callOpenClawGateway\b' --include='*.ts' --include='*.tsx' src/ | grep -v __tests__ | wc -l` → 14 unique callsites.
-- `grep -rn '"gateway", "call", "agent"' src/` (literal) → 0 hits in non-test code; the PR #3 source-discipline test (`task-dispatch-source-discipline.test.ts`) guards `task-dispatch.ts` against re-introduction. The same anti-pattern still exists in `notifications/deliver/route.ts` and `chat/messages/route.ts` where the test does not yet apply.
+- `grep -rEn 'runOpenClaw\s*\(' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__' | wc -l` → 21 actual call expressions across 15 files. The narrower `runOpenClaw\s*\(` pattern (vs `runOpenClaw\b`) excludes the export declaration in `command.ts`, the `runner = opts.runner ?? runOpenClaw` function-reference in `openclaw-doctor-cache.ts`, dynamic-import bindings, and JSDoc references — leaving only the actual call sites.
+- `grep -rEn 'callOpenClawGateway\s*[(<]' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__' | grep -v 'export\|import' | wc -l` → 17 actual call expressions across 8 files. The `[(<]` after the identifier matches both `callOpenClawGateway(` and the generic-typed form `callOpenClawGateway<T>(`.
+- The literal anti-pattern `'gateway', 'call', 'agent'` (single-quoted, comma-separated, the form actually used in source) is matched by `grep -rEn "['\"]gateway['\"]\s*,\s*['\"]call['\"]\s*,\s*['\"]agent['\"]" --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__'`. It returns 3 hits in non-test code: `notifications/deliver/route.ts:90`, `chat/messages/route.ts:518`, and (with `agent.wait` instead of `agent`) `chat/messages/route.ts:597`. The earlier sub-task report's "literal grep returns 0" was an artefact of using double-quoted literals in the search pattern; the source uses single quotes.
+- The PR #3 source-discipline test (`task-dispatch-source-discipline.test.ts`) guards `task-dispatch.ts` specifically against re-introduction of this pattern; PR 1.3c should extend the same test pattern to cover `notifications/deliver/route.ts` and `chat/messages/route.ts` once those callsites migrate.
 
 No secrets, tokens, or session keys appear in the inventory output. All grep targets are public source patterns.
 
