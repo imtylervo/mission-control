@@ -32,6 +32,8 @@ pnpm dev
 
 Open http://localhost:3000. Login with `AUTH_USER` / `AUTH_PASS` from your `.env.local`.
 
+For safe local start/stop commands, `OPENCLAW_BIN` guidance, and process-identification cautions that avoid killing unrelated Next.js services, see [Mission Control dev-server runbook](./DEV_SERVER_RUNBOOK.md).
+
 ## Production (Direct)
 
 ```bash
