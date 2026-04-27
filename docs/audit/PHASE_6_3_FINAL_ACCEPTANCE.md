@@ -127,7 +127,7 @@ Per `docs/audit/MISSION_CONTROL_ROADMAP.md`, the items NOT in the merged audit s
 | Phase | Status | Note |
 | --- | --- | --- |
 | 0.1 / 0.2 / 0.3 | Pre-baseline | Closed before phase-0/baseline-audit was branched. |
-| 1.1 | Closed | Hydration nonce mismatch — addressed in PR #15. |
+| 1.1 | Core fix closed; dashboard verification pending | PR #15 merged the `suppressHydrationWarning` core fix and verified `/login` `/setup` `/docs` via curl. Dashboard `/` route harness lives in PR #17 (OPEN draft, 2/7 test-plan done) awaiting admin auth credential / Playwright `MC_STORAGE_STATE_FILE`. Documented in residual #5 below. |
 | 1.2 | Closed | Notifications delivery WS migration. |
 | 1.3 (a/b/c/d) | Closed | Generic gateway WS migration batch (PRs #11, #12, #13, #22). |
 | 1.4 | Closed | Generic gateway WS migration batch 1. |
@@ -153,6 +153,8 @@ Per `docs/audit/MISSION_CONTROL_ROADMAP.md`, the items NOT in the merged audit s
 3. **`.env.local.added-by-mai`** untracked file in the working tree — single-line file pinning `OPENCLAW_BIN` for local dev, set up earlier in another session. Documented in earlier audits; intentionally not committed (env files belong outside git). Đào noted this in PR #37 review without flagging as a problem.
 
 4. **Phase 6.2 strategy doc is a planning artifact, not yet executed** — the actual upstream PRs in Wave 1 (Phase 4.1 gateway-url fix, Phase 2.4 doctor scripts, Phase 2.1 admin auth) have NOT been opened against `builderz-labs/mission-control`. That work is the natural next step AFTER this PR closes, but is itself out of scope for "Phase 6.3 final acceptance" (which is about evidence collection, not contribution execution).
+
+5. **Phase 1.1 dashboard-route harness still open as PR #17 (DRAFT)** — PR #15 closed the CORE fix (Option A `suppressHydrationWarning` + curl verification on `/login`/`/setup`/`/docs`), but the dashboard `/` route requires admin auth which the harness can read from one of `MC_STORAGE_STATE_FILE` / `MC_ADMIN_PASS` / `MC_ADMIN_PASS_FILE`. Earlier audit docs claimed "Phase 1.1 closed" (singular) — that was an over-claim; the correct shape is "core fix closed, dashboard verification pending via PR #17." This audit doc and `PHASE_AUDIT_SUMMARY.md` are corrected as part of PR #47 (Phase 1.1 status correction). Tyler can complete PR #17 by setting `MC_STORAGE_STATE_FILE` to a Playwright-saved authenticated session and re-running the harness — at that point Đào reviews + merges.
 
 ## What this PR does not do
 
