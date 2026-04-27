@@ -65,6 +65,14 @@ export async function POST(request: NextRequest) {
     try {
       // Call gateway sessions_spawn directly. Try with tools.profile first,
       // fall back without it for older gateways that don't support the field.
+      //
+      // PR #13 / 1.3d: this callsite is INTENTIONALLY retained on the legacy
+      // CLI wrapper `callOpenClawGateway` because parity with the WS method
+      // `sessions.create` is not yet proven (the WS schema lacks
+      // runTimeoutSeconds, tools profile, runtime/cleanup fields that the
+      // CLI tool `sessions_spawn` accepts — per Đào msg 1336). Migration
+      // deferred to a separate ticket once the WS-side schema is extended
+      // or a parity shim is designed.
       let result: any
       let compatibilityFallbackUsed = false
       try {

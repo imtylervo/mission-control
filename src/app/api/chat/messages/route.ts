@@ -5,7 +5,6 @@ import { eventBus } from '@/lib/event-bus'
 import { requireRole } from '@/lib/auth'
 import { logger } from '@/lib/logger'
 import { scanForInjection, sanitizeForPrompt } from '@/lib/injection-guard'
-import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 import { resolveCoordinatorDeliveryTarget } from '@/lib/coordinator-routing'
 
@@ -490,7 +489,7 @@ export async function POST(request: NextRequest) {
             const idempotencyKey = `mc-${messageId}-${Date.now()}`
 
             if (sessionKey) {
-              const acceptedPayload = await callOpenClawGateway<any>(
+              const acceptedPayload = await callOpenClawGatewayWS<any>(
                 'chat.send',
                 {
                   sessionKey,
@@ -499,7 +498,7 @@ export async function POST(request: NextRequest) {
                   deliver: false,
                   attachments: toGatewayAttachments(body.attachments),
                 },
-                12000,
+                { timeoutMs: 12000 },
               )
               const status = String(acceptedPayload?.status || '').toLowerCase()
               forwardInfo.delivered = status === 'started' || status === 'ok' || status === 'in_flight'
