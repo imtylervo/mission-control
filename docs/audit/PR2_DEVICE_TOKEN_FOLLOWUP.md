@@ -58,3 +58,37 @@ Outside this repository. The Mission Control codebase only sends the token; whet
 > **AC:** "mc-device-token classification/follow-up nếu cần" (msg 1004)
 
 Outcome: **classified, not bundled, follow-up draft above.**
+
+---
+
+## Update 2026-04-27 — Classification confirmed: BEARER-EQUIVALENT (PR #18, Phase 1.6)
+
+The "If yes (token is bearer-equivalent on the gateway)" branch above is the live behavior of the OpenClaw gateway version this fork runs against. Source-side evidence comes from the bundled gateway runtime checked in at `~/.npm-global/lib/node_modules/openclaw/dist/server.impl-CtLS1ywt.js` (OpenClaw `2026.4.24`):
+
+- Lines `10538-10579` define a fallback path that runs when primary auth (password / regular token / bootstrap-token) is **not** OK and the connect frame still carries a `deviceTokenCandidate` plus a known `deviceId`. The path calls `verifyDeviceToken({ deviceId, token, role, scopes })`, sets `authOk = true` and `authMethod = "device-token"` on success, and **does not require `device.signature` to be present or valid in the same frame**.
+- The `device.signature` path (line `10762-10764`, `verifyDeviceSignature(publicKey, payloadV2|V3, signature)`) is independent — it is the v2/v3 challenge-response check that uses the freshly-signed handshake payload. It is not chained to the `deviceToken` fallback.
+- Line `10768` enumerates `authMethod` as `"password" | "token" | "bootstrap-token" | "device-token" | "none"`. `device-token` is a first-class auth method on this gateway, not an augmentation that requires another signature alongside.
+- Line `10736` shows the auth-resolution chain treats `deviceToken` as a peer of `token` and `bootstrapToken` for the connect frame: `connectParams.auth?.token ?? connectParams.auth?.deviceToken ?? connectParams.auth?.bootstrapToken ?? null`.
+- Server-side, gateway-issued tokens are persisted per device under the `tokens` field of `~/.openclaw/devices/paired.json` (chmod `600`). No token values are shown in this audit.
+
+Threat path:
+
+1. XSS lands on Mission Control (CSP weakness or library RCE).
+2. Reads `localStorage['mc-device-token']` and `localStorage['mc-device-id']` — both are plain strings and trivially exfiltrated; the private key is no longer in `localStorage` post-PR #574.
+3. Connects to the gateway with the stolen `deviceId` in `connect.params.device.id` and the stolen token in `connect.params.auth.deviceToken`.
+4. Gateway runs the `verifyDeviceToken` fallback above. Token matches the stored token for that `deviceId` → `authOk = true`. Session granted **without the private key**.
+
+Mitigations the gateway already has:
+
+- `AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN` per `clientIp` (lines `10546-10548` / `10573`). This caps brute-force volume but does not stop a single-shot replay with a valid token.
+- The per-device token entry in `paired.json` is rotatable on the gateway side (`ensureDeviceToken` returns `rotatedAtMs` / `createdAtMs`). Mission Control does not currently force a rotation on suspected exfil.
+
+Mitigations Mission Control still needs:
+
+- **Take `mc-device-token` out of `localStorage`** so JS cannot read it. PR #574 applied the same hardening to the private key by storing the `CryptoKey` in IndexedDB with `extractable: false`. Token migration cannot use `CryptoKey` (the token is just an opaque string), so the practical options are:
+  - **(a) in-memory only** — token never persists; require a fresh device-signature handshake on every reload. Highest hardening, biggest UX cost (device-pair churn on tab close).
+  - **(b) `sessionStorage`** — survives reloads within one tab, dropped at tab close. Mid-tier hardening, mid-tier UX cost. Still readable by same-origin JS, so this only mitigates persisted-XSS exfil, not in-page XSS.
+  - **(c) `httpOnly` cookie minted by Mission Control's BFF** — JS-unreadable. Highest practical hardening, biggest implementation cost (BFF must proxy the gateway connect frame).
+- Choosing among (a) / (b) / (c) is a UX/security trade-off design call; this audit does **not** decide it. The implementation work is tracked as **Phase 1.7** in `docs/audit/MISSION_CONTROL_ROADMAP.md`.
+
+This update closes Phase 1.6 (the classification question). It does not close the storage migration; that work is Phase 1.7.

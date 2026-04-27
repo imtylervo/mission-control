@@ -172,6 +172,7 @@ Follow-on cleanup gated on the first two unblocks:
 ### 1.6 `mc-device-token` classification
 - Owner: Đào review, Mai source audit
 - Priority: medium
+- **Status: ✅ complete via PR #18.** Classified as **bearer-equivalent** based on local OpenClaw `2026.4.24` gateway source (`~/.npm-global/lib/node_modules/openclaw/dist/server.impl-CtLS1ywt.js:10538-10579`): `verifyDeviceToken` runs as a fallback auth path that grants `authMethod="device-token"` without requiring a fresh `device.signature` in the same connect frame. XSS that reads `mc-device-token` + `mc-device-id` from `localStorage` can replay against the gateway and acquire a session without the private key. Storage-migration implementation tracked as Phase 1.7 below. See `docs/audit/PR18_DEVICE_TOKEN_BEARER_CLASSIFICATION.md` and the appended "Update 2026-04-27" section in `docs/audit/PR2_DEVICE_TOKEN_FOLLOWUP.md`.
 - Problem:
   - Need determine if `mc-device-token` is bearer-equivalent and should be treated like a secret.
 - Tasks:
@@ -180,6 +181,29 @@ Follow-on cleanup gated on the first two unblocks:
   - Update baseline/security doc with classification.
 - Done when:
   - Classified as bearer-equivalent or non-bearer with evidence.
+
+### 1.7 `mc-device-token` storage migration (XSS-exfil hardening)
+- Owner: Đào design, Mai implement
+- Priority: medium-high (security follow-up to Phase 1.6 classification)
+- Problem:
+  - Phase 1.6 classified `mc-device-token` as bearer-equivalent. Storing it in `localStorage` makes it trivially XSS-readable, defeating the same threat model PR #574 addressed for the private key (which lives in IndexedDB with `extractable: false`).
+- Decision points (Đào to pick before implementation):
+  - **(a) in-memory only** — drop on tab close; force re-pair on reload. Highest hardening, biggest UX cost.
+  - **(b) `sessionStorage`** — survives reloads within tab, dropped at close. Mid-tier hardening; still same-origin JS-readable so only mitigates *persisted* XSS exfil.
+  - **(c) `httpOnly` BFF cookie** — JS-unreadable; requires the Mission Control server to proxy the gateway connect frame. Highest practical hardening, biggest implementation cost.
+- Tasks (after option pick):
+  - Move `cacheDeviceToken` / `getCachedDeviceToken` off `localStorage`.
+  - Update `src/lib/websocket.ts` consumers (lines `226`, `233`, `298`, `402-403`).
+  - Add a source-discipline test that asserts `localStorage` has no `'mc-device-token'` write site and no read site outside the chosen storage abstraction.
+  - Update `docs/audit/MISSION_CONTROL_BASELINE.md` row to reflect the closed bearer-exfil path.
+- Done when:
+  - `mc-device-token` no longer present in `localStorage` on a fresh session.
+  - Source-discipline test guards against regression.
+  - Browser smoke confirms reconnect flow still works under the chosen option.
+- Gates:
+  - `pnpm run typecheck`.
+  - Targeted vitest source-discipline test.
+  - Browser smoke (Chromium under Playwright if `MC_STORAGE_STATE_FILE` is available, otherwise manual).
 
 ---
 
