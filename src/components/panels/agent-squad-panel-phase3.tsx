@@ -22,6 +22,7 @@ import {
   CreateAgentModal
 } from './agent-detail-tabs'
 import { formatModelName, formatProviderName, formatProviderRoute, formatFullProviderModel, buildTaskStatParts } from '@/lib/agent-card-helpers'
+import { AgentEvalCard } from '@/components/panels/agent-eval-card'
 import { useMissionControl, type Agent } from '@/store'
 
 const log = createClientLogger('AgentSquadPhase3')
@@ -612,7 +613,7 @@ function AgentDetailModalPhase3({
   onDelete: (agentId: number, removeWorkspace: boolean) => Promise<void>
 }) {
   const [agentState, setAgentState] = useState<Agent & { config?: any; working_memory?: string }>(agent as Agent & { config?: any; working_memory?: string })
-  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models' | 'evals'>('overview')
   const [editing, setEditing] = useState(false)
   const [formData, setFormData] = useState({
     role: agent.role,
@@ -848,7 +849,8 @@ function AgentDetailModalPhase3({
     { id: 'memory', label: 'Memory', icon: 'M' },
     { id: 'tasks', label: 'Tasks', icon: 'T' },
     { id: 'config', label: 'Config', icon: 'C' },
-    { id: 'activity', label: 'Activity', icon: 'A' }
+    { id: 'activity', label: 'Activity', icon: 'A' },
+    { id: 'evals', label: 'Evals', icon: 'E' }
   ]
 
   const handleDelete = async (removeWorkspace: boolean) => {
@@ -1058,6 +1060,12 @@ function AgentDetailModalPhase3({
 
           {activeTab === 'activity' && (
             <ActivityTab agent={agentState} />
+          )}
+
+          {activeTab === 'evals' && (
+            <div className="p-4">
+              <AgentEvalCard agentName={agentState.name} />
+            </div>
           )}
         </div>
       </div>

@@ -49,18 +49,37 @@ The file is pure (no DB / no I/O) so it is testable without fixtures and reusabl
 - `extractRecentFailures` (4 cases) — filter + sort DESC + limit; missing `passed` skipped; empty / all-pass returns `[]`; default limit is 5.
 - `formatRubric` (2 cases) — known layer regex match; unknown layer fallback string.
 
-## Why panel UI is deferred to a follow-up
+## Panel UI added (per Đào msg 1694 review feedback)
 
-Phase 5.2's roadmap line is "display eval phase, rubric, score, promotion readiness, and recent failures." The display surface itself is non-trivial:
+Initial draft of this PR shipped helpers-only and deferred the panel render to a follow-up. Đào's review correctly pushed back: roadmap § 5.2 says "DISPLAY eval phase, rubric, score, promotion readiness, and recent failures." Helpers alone don't close that. So PR #39 was extended in-place (NOT a follow-up PR) to land the actual render too.
 
-- The agent panel (`agent-squad-panel-phase3.tsx`) does not currently have an eval section; adding one means new layout decisions (where in the card vs detail modal vs a new sub-panel?).
-- An "eval score" card requires `useEffect` data fetch from `/api/agents/evals?agent=X&action=history`, loading state, error states, refresh cadence — bigger scope than helpers.
-- The existing tests for the agent panel are e2e / Playwright; component-level test infra would need to land first to gate the new render unit.
-- Roadmap § 5.2 is one of six Phase 5 items in a single batch; the rendering + data-fetch wiring would dominate Đào's review window.
+### `src/components/panels/agent-eval-card.tsx` (new)
 
-The cleaner shape: this PR lands the helpers + tests now (small, fast review). A follow-up PR wires those helpers into the panel render with proper loading/error states. Doing it in one PR risks the helpers + the UI both shipping with sub-par tests under deadline pressure.
+Client component that:
+- Receives `agentName: string` as the only prop.
+- `useEffect` fetches `/api/agents/evals?agent=<name>&action=history` on mount and on `agentName` change. Cleanup flag (`cancelled`) protects against state updates after unmount.
+- Synthesizes the "current 4-layer view" from the most recent history row per layer (history is `ORDER BY created_at DESC` so the FIRST row per layer wins — addresses caveat C1 below).
+- Calls all four helpers from `eval-summary.ts`:
+  - `summarizeEvalResults(synthesized)` for the per-layer status badges + pass-rate display.
+  - `computePromotionReadiness(synthesized, drift)` for the readiness label at the top of the card.
+  - `extractRecentFailures(payload.history, 5)` for the recent-failures feed at the bottom.
+  - `formatRubric(layer)` for the small description under each layer's badge.
+- States rendered explicitly: `loading` (spinner-text "loading…"), `error` (red error text with route-supplied message — covers operator-only auth errors gracefully), `empty` ("No eval runs recorded for this agent yet"), `loaded`.
+- Promotion readiness gets a tone color: `text-emerald-300` for ready, `text-amber-300` for partial, `text-red-300` for blocked, `text-muted-foreground` for no-data.
+- Per-layer status badge: `✓` (green) / `✗` (red) / `–` (muted) for pass / fail / unknown.
 
-This is documented here so a future operator (or future Mai session) sees the deferral rationale, not just a "TODO" string.
+### `src/components/panels/agent-squad-panel-phase3.tsx` (wired in)
+
+- Imported `AgentEvalCard` from the new file.
+- Extended `activeTab` union to include `'evals'`.
+- Added `{ id: 'evals', label: 'Evals', icon: 'E' }` to the `tabs` array (after Activity, end of list).
+- Added a render block `{activeTab === 'evals' && <div className="p-4"><AgentEvalCard agentName={agentState.name} /></div>}` next to the other tab content blocks.
+
+The card is operator-gated server-side (route returns auth-error JSON for viewers); the card surfaces that via the `error` branch with the route's own error message, no client-side role check needed.
+
+### Why no component-level vitest for the card
+
+There are zero `*.test.tsx` files in `src/` today — the agent panel's existing component tests are Playwright e2e in `tests/`. Establishing a vitest+RTL convention is its own bikeshedding lift (jsdom config alignment, mock fetch, Loader/Button/etc. dependencies). The four helper functions the card consumes have 15 + 13 = 28 unit tests pinning their outputs (`eval-summary.test.ts` + the `formatRubric` portion of `agent-card-helpers.test.ts`), which catches the high-value regression: a refactor that breaks the consumer contract. The render shell itself (loading/error/empty/loaded branches) is small enough to eyeball and is exercised by the existing Playwright dashboard-smoke if extended in a follow-up.
 
 ## Gates run (Mai re-verified on post-PR-#38 base)
 
