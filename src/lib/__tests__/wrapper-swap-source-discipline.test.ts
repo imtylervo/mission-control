@@ -66,13 +66,18 @@ const MIGRATED_FILES: ReadonlyArray<readonly [string, string]> = [
   ['app/api/sessions/route.ts', 'sessions'],
   ['app/api/sessions/[id]/control/route.ts', 'sessions/[id]/control'],
   ['app/api/chat/messages/route.ts', 'chat/messages'],
+  // PR #21 / Phase 1.4: chat.history is now exposed on the gateway WS
+  // protocol (OpenClaw 2026.4.24 SDK,
+  // plugin-sdk/src/gateway/protocol/schema/logs-chat.d.ts:15-18), so the
+  // transcript route was migrated off the legacy CLI wrapper. Disk-side
+  // fallback inside the route is unchanged.
+  ['app/api/sessions/transcript/gateway/route.ts', 'sessions/transcript/gateway'],
   ['lib/task-dispatch.ts', 'lib/task-dispatch'],
 ]
 
 const DEFERRED_FILES: ReadonlyArray<readonly [string, string, string]> = [
   // [path, label, marker substring that must be present in retention comment]
   ['app/api/spawn/route.ts', 'spawn', 'INTENTIONALLY retained on the legacy'],
-  ['app/api/sessions/transcript/gateway/route.ts', 'sessions/transcript/gateway', 'INTENTIONALLY retained on the legacy'],
 ]
 
 describe('callOpenClawGateway wrapper-swap source discipline (PR #13 / Phase 1.3d)', () => {
