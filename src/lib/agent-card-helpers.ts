@@ -61,6 +61,81 @@ export function formatFullProviderModel(config: any): string | null {
   return readPrimaryModelId(config)
 }
 
+/**
+ * Phase 5.6 — provider tier classification.
+ *
+ * Surfaces whether an agent's configured model will cost money to run.
+ * The dashboard renders this as a small badge next to the model name so
+ * Tyler can spot a paid agent before triggering a wake/dispatch.
+ *
+ *   'free'    — runs locally on the host with no metered API cost
+ *               (Ollama, llama.cpp local, lm-studio).
+ *   'paid'    — known metered cloud provider (Anthropic, OpenAI,
+ *               Cohere, Google Gemini paid SKUs, AWS Bedrock).
+ *   'unknown' — no provider prefix on the model ID, or a router-style
+ *               prefix that hides the eventual provider (e.g.
+ *               '9router/cx/gpt-5.5' could route to free OR paid;
+ *               operator decides via the router config). Default to
+ *               'unknown' rather than guess and falsely reassure.
+ *
+ * Classification reads the FIRST segment of the model ID
+ * (`formatProviderName`). Lowercase comparison; trailing variants
+ * collapse to the same provider (e.g. 'anthropic-stage' → still paid).
+ */
+export type ProviderTier = 'free' | 'paid' | 'unknown'
+
+const FREE_PROVIDERS: readonly string[] = [
+  'ollama',
+  'llamacpp',
+  'llama-cpp',
+  'lmstudio',
+  'lm-studio',
+  'local',
+] as const
+
+const PAID_PROVIDERS: readonly string[] = [
+  'anthropic',
+  'openai',
+  'azure-openai',
+  'azureopenai',
+  'cohere',
+  'google',
+  'gemini',
+  'mistral',
+  'bedrock',
+  'aws-bedrock',
+  'groq',
+  'deepseek',
+  'xai',
+  'perplexity',
+] as const
+
+export function classifyProviderTier(config: any): ProviderTier {
+  const provider = formatProviderName(config)
+  if (!provider) return 'unknown'
+  const normalized = provider.toLowerCase()
+  if (FREE_PROVIDERS.some((p) => normalized === p || normalized.startsWith(`${p}-`))) {
+    return 'free'
+  }
+  if (PAID_PROVIDERS.some((p) => normalized === p || normalized.startsWith(`${p}-`))) {
+    return 'paid'
+  }
+  return 'unknown'
+}
+
+/**
+ * Phase 5.6 — short human-readable label for the badge UI. Kept in
+ * sync with `classifyProviderTier`. Tooltip-friendly (no emoji), the
+ * UI layer adds tone color.
+ */
+export function tierLabel(tier: ProviderTier): string {
+  switch (tier) {
+    case 'free': return 'Local / free'
+    case 'paid': return 'Paid API'
+    case 'unknown': return 'Unknown — check router config'
+  }
+}
+
 export interface TaskStats {
   total: number
   assigned: number

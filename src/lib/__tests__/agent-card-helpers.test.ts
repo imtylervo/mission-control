@@ -4,6 +4,8 @@ import {
   formatProviderName,
   formatProviderRoute,
   formatFullProviderModel,
+  classifyProviderTier,
+  tierLabel,
   buildTaskStatParts,
   extractWsHost,
 } from '@/lib/agent-card-helpers'
@@ -106,6 +108,69 @@ describe('formatFullProviderModel', () => {
   it('returns null for missing config', () => {
     expect(formatFullProviderModel(null)).toBeNull()
     expect(formatFullProviderModel({})).toBeNull()
+  })
+})
+
+/**
+ * Phase 5.6 — provider tier classification.
+ */
+describe('classifyProviderTier', () => {
+  it('classifies known free providers as "free"', () => {
+    expect(classifyProviderTier({ model: { primary: 'ollama/qwen2.5-coder:14b' } })).toBe('free')
+    expect(classifyProviderTier({ model: { primary: 'llamacpp/llama-3-8b' } })).toBe('free')
+    expect(classifyProviderTier({ model: { primary: 'lmstudio/local-model' } })).toBe('free')
+    expect(classifyProviderTier({ model: { primary: 'local/whatever' } })).toBe('free')
+  })
+
+  it('classifies known paid providers as "paid"', () => {
+    expect(classifyProviderTier({ model: { primary: 'anthropic/claude-opus-4-5' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'openai/gpt-4o' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'cohere/command' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'google/gemini-pro' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'gemini/2.0' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'mistral/large' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'bedrock/claude-haiku' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'groq/llama-3' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'deepseek/v3' } })).toBe('paid')
+  })
+
+  it('classifies router-style prefixes (9router) as "unknown" — operator must check router config', () => {
+    expect(classifyProviderTier({ model: { primary: '9router/cx/gpt-5.5' } })).toBe('unknown')
+    expect(classifyProviderTier({ model: { primary: '9router/free/llama' } })).toBe('unknown')
+  })
+
+  it('classifies bare model ids (no prefix) as "unknown"', () => {
+    expect(classifyProviderTier({ model: { primary: 'gpt-4o' } })).toBe('unknown')
+    expect(classifyProviderTier({ model: { primary: 'claude-opus' } })).toBe('unknown')
+  })
+
+  it('is case-insensitive on the provider segment', () => {
+    expect(classifyProviderTier({ model: { primary: 'Ollama/qwen' } })).toBe('free')
+    expect(classifyProviderTier({ model: { primary: 'ANTHROPIC/claude' } })).toBe('paid')
+  })
+
+  it('matches subprefix variants (anthropic-stage → paid)', () => {
+    expect(classifyProviderTier({ model: { primary: 'anthropic-stage/claude' } })).toBe('paid')
+    expect(classifyProviderTier({ model: { primary: 'ollama-vps/qwen' } })).toBe('free')
+  })
+
+  it('returns "unknown" for missing or non-string config', () => {
+    expect(classifyProviderTier(null)).toBe('unknown')
+    expect(classifyProviderTier({})).toBe('unknown')
+    expect(classifyProviderTier({ model: { primary: '' } })).toBe('unknown')
+    expect(classifyProviderTier({ model: { primary: 42 } })).toBe('unknown')
+  })
+
+  it('does NOT classify an unrecognized provider segment as paid (defaults to unknown — no false confidence)', () => {
+    expect(classifyProviderTier({ model: { primary: 'totally-new-vendor/some-model' } })).toBe('unknown')
+  })
+})
+
+describe('tierLabel', () => {
+  it('returns a non-empty label for each tier', () => {
+    expect(tierLabel('free')).toBe('Local / free')
+    expect(tierLabel('paid')).toBe('Paid API')
+    expect(tierLabel('unknown')).toContain('Unknown')
   })
 })
 
