@@ -47,6 +47,38 @@ export function getGatewayAllowedOrigins(): string[] | null {
   return list.slice()
 }
 
+/**
+ * Phase 2.2 / PR #25 — derive the localhost ↔ 127.0.0.1 peer of a local
+ * origin so MC auto-registration covers both forms. Browsers treat the two
+ * as different origins and the gateway's allowlist is exact-string match,
+ * so an MC started at `http://localhost:3000` cannot connect when the
+ * allowlist only contains `http://127.0.0.1:3000` (and vice versa). When
+ * the input origin is neither localhost nor 127.0.0.1 (e.g. a real
+ * hostname), there is no peer — return null and behaviour collapses to
+ * single-origin registration as before.
+ *
+ * Scope intentionally narrow: only the localhost ↔ 127.0.0.1 swap on the
+ * same protocol + port. host.docker.internal and other local aliases are
+ * deferred — operators who need them can add manually.
+ */
+function derivePeerLocalOrigin(origin: string): string | null {
+  try {
+    const u = new URL(origin)
+    const host = u.hostname.toLowerCase()
+    if (host === 'localhost') {
+      u.hostname = '127.0.0.1'
+      return u.origin
+    }
+    if (host === '127.0.0.1') {
+      u.hostname = 'localhost'
+      return u.origin
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export function registerMcAsDashboard(mcUrl: string): { registered: boolean; alreadySet: boolean } {
   const configPath = config.openclawConfigPath
   if (!configPath || !fs.existsSync(configPath)) {
@@ -62,21 +94,24 @@ export function registerMcAsDashboard(mcUrl: string): { registered: boolean; alr
     if (!parsed.gateway.controlUi) parsed.gateway.controlUi = {}
 
     const origin = new URL(mcUrl).origin
+    const peer = derivePeerLocalOrigin(origin)
+    const targets = peer ? [origin, peer] : [origin]
     const origins: string[] = parsed.gateway.controlUi.allowedOrigins || []
-    const alreadyInOrigins = origins.includes(origin)
+    const missing = targets.filter((t) => !origins.includes(t))
 
-    if (alreadyInOrigins) {
+    if (missing.length === 0) {
       return { registered: false, alreadySet: true }
     }
 
-    // Add MC origin to allowedOrigins only — do NOT touch dangerouslyDisableDeviceAuth.
-    // MC authenticates via gateway token, but forcing device auth off is a security
-    // downgrade that the operator should control, not Mission Control.
-    origins.push(origin)
+    // Add MC origin (and its localhost/127.0.0.1 peer if applicable) to
+    // allowedOrigins only — do NOT touch dangerouslyDisableDeviceAuth.
+    // MC authenticates via gateway token, but forcing device auth off is a
+    // security downgrade that the operator should control, not Mission Control.
+    for (const m of missing) origins.push(m)
     parsed.gateway.controlUi.allowedOrigins = origins
 
     fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2) + '\n')
-    logger.info({ origin }, 'Registered MC origin in gateway config')
+    logger.info({ origin, peer, added: missing }, 'Registered MC origin in gateway config')
     return { registered: true, alreadySet: false }
   } catch (err: any) {
     // Read-only filesystem (e.g. Docker read_only: true, or intentional mount) —
