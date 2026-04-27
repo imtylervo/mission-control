@@ -340,8 +340,9 @@ Goal: make this maintainable and potentially upstreamable.
 
 Phase 1.2, 1.3, and 1.4 (substantially) are now complete — see the Status lines on each section. The remaining Phase 1 candidates, in suggested order:
 
-1. **Phase 1.1 — Hydration nonce mismatch follow-up.** Smallest scope, dev-overlay quality-of-life, decoupled from any gateway/WS work. Good candidate for the next implementation PR.
+1. **Phase 1.1 — Hydration nonce mismatch follow-up.** PR #15 applied Option A (`suppressHydrationWarning`). PR #17 is a draft harness that runs the dashboard-route verification; it is **PENDING dashboard auth** because the rotated admin password file is not on the box. Once a credential is restored, run the harness and either close the row ✅ or escalate to Option D (Next.js bump).
 2. ~~**Phase 1.5 — #574 legacy migration verification.**~~ **Done via PR #16.** Migration verified end-to-end on Chromium (with the real fixture format from pre-#574 commit `1411296`). The Camoufox partial-failure observed in PR #5 sub-task 5a is reclassified as a Firefox-side CryptoKey-IDB roundtrip quirk, not an MC bug. Code path unchanged.
-3. **Phase 1.6 — `mc-device-token` classification.** Source-side audit; depends on `docs/audit/PR2_DEVICE_TOKEN_FOLLOWUP.md` as starting point. No code change unless the audit surfaces a defect.
+3. ~~**Phase 1.6 — `mc-device-token` classification.**~~ **Done via PR #18.** Classified **bearer-equivalent** based on local OpenClaw `2026.4.24` gateway source: `verifyDeviceToken` runs as a fallback auth path that grants `authMethod="device-token"` without requiring a fresh `device.signature`. Storage-migration implementation is tracked as Phase 1.7 below.
+4. **Phase 1.7 — `mc-device-token` storage migration design.** Pick a storage strategy — (a) in-memory only, (b) `sessionStorage`, or (c) `httpOnly` BFF cookie — before implementation. Đào design call; implementation PR follows the decision.
 
 The Phase 1.4 design-deferred leftovers (spawn `sessions_spawn`, transcript `chat.history`) and the Phase 1.4 NEEDS DESIGN item (`pipelines/run`) are tracked under "1.4 deferred leftovers" above and should be picked up only after Đào opens explicit design tickets for them.
