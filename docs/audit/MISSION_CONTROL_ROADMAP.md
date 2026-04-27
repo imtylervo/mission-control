@@ -90,6 +90,7 @@ Goal: close the items already discovered during Phase 1/2 audit work.
 ### 1.2 Notifications delivery WS migration
 - Owner: Mai implementation, Đào review
 - Priority: high
+- **Status: ✅ complete via PR #12 (`ce2d8ee`).** Notifications delivery agent invocation, plus the matching `chat/messages` invoke + `agent.wait` companion, all migrated from `runOpenClaw(['gateway','call','agent',...])` to `callOpenClawGatewayWS('agent', ...)` and `callOpenClawGatewayWS('agent.wait', ...)`. Source-discipline guard added at `src/lib/__tests__/gateway-call-agent-source-discipline.test.ts`.
 - Problem:
   - `src/app/api/notifications/deliver/route.ts` still shells out via `runOpenClaw(['gateway','call','agent',...])`.
   - Same container `spawn openclaw ENOENT` risk as #608.
@@ -107,6 +108,7 @@ Goal: close the items already discovered during Phase 1/2 audit work.
 ### 1.3 Generic gateway caller inventory
 - Owner: Mai inventory, Đào prioritization
 - Priority: high
+- **Status: ✅ complete via PRs #10 (`d100739`) inventory, #11 (`f681f41`) sessions_send batch, #12 (`ce2d8ee`) gateway-call-agent batch, and #13 (`b0c7c334`) callOpenClawGateway wrapper-swap batch.** Inventory doc lives at `docs/audit/PR10_GATEWAY_CALLER_INVENTORY.md` and remains the source-of-truth for any follow-on Tier 3 / KEEP CLI / NEEDS DESIGN decisions.
 - Problem:
   - Multiple routes still use `runOpenClaw` or generic CLI wrappers.
 - Tasks:
@@ -121,6 +123,7 @@ Goal: close the items already discovered during Phase 1/2 audit work.
 ### 1.4 Generic gateway WS migration batch 1
 - Owner: Mai implementation, Đào review
 - Priority: high
+- **Status: ⚠️ substantially complete via PR #13 (`b0c7c334`); two design-deferred leftovers documented below.** 14 of 17 inventoried `callOpenClawGateway` callsites migrated to `callOpenClawGatewayWS`. Source-discipline guard at `src/lib/__tests__/wrapper-swap-source-discipline.test.ts` covers both the migrated files and the deferred ones (asserts the deferral marker comment is present so a future cleanup pass cannot silently strip the legacy call).
 - Candidate paths:
   - `channels/route.ts`
   - `nodes/route.ts`
@@ -135,6 +138,21 @@ Goal: close the items already discovered during Phase 1/2 audit work.
 - Gates:
   - Unit tests.
   - Manual smoke for affected panels.
+
+#### 1.4 deferred leftovers — design tickets needed before migration
+
+These three callsites are intentionally retained on the legacy `callOpenClawGateway` wrapper (with marker comment `INTENTIONALLY retained on the legacy` at the call site) until the design questions below are resolved. The wrapper module `src/lib/openclaw-gateway.ts` and its parser test `openclaw-gateway.test.ts` are kept alive for the same reason.
+
+| Callsite | Deferral reason | Unblock condition |
+| --- | --- | --- |
+| `src/app/api/spawn/route.ts` × 2 (`sessions_spawn`) | WS `sessions.create` schema lacks `runTimeoutSeconds`, tools profile, runtime, and cleanup fields that the CLI tool accepts (per Đào msg 1336). Silently mapping would introduce a parity bug. | Either extend the WS `sessions.create` schema to cover these fields, OR design a parity shim on the MC server that translates the CLI-style spawn payload into a series of WS calls (`sessions.create` + follow-up `sessions.patch` for the missing fields). |
+| `src/app/api/sessions/transcript/gateway/route.ts` × 1 (`chat.history`) | The WS protocol does not export `chat.history` as of 2026-04-27 (per Đào's check). | Either add `chat.history` to the gateway WS protocol, OR pick an alternative read path (disk-side transcript reader is already the existing CLI fallback in this route). |
+| `src/app/api/pipelines/run/route.ts:137` (`runOpenClaw(['agent', '--message', ...])`) | NOT in the Phase 1.4 batch. Uses the CLI's own `agent` long-running spawn (not `gateway call agent` RPC); spawn-vs-RPC parity needs a design call (does the caller need a long-lived stream of agent output, or a single deferred result?). | Separate design ticket — see follow-up note in `docs/audit/PR10_GATEWAY_CALLER_INVENTORY.md`. |
+
+Follow-on cleanup gated on the first two unblocks:
+- Delete `src/lib/openclaw-gateway.ts` and its unit test once both deferred files migrate.
+- Simplify `chat/messages/route.ts` catch blocks (orphaned CLI-quirk recovery branches) and remove the local `parseGatewayJson` function.
+- Update `task-dispatch-source-discipline.test.ts` test #4 from "callOpenClawGateway is still available" to "callOpenClawGateway has been removed".
 
 ### 1.5 #574 legacy migration verification follow-up
 - Owner: Đào design, Mai execute if feasible
@@ -295,6 +313,10 @@ Goal: make this maintainable and potentially upstreamable.
 
 ## Immediate next task recommendation
 
-Start with **Phase 1.3 Generic gateway caller inventory**, then implement **Phase 1.2 Notifications delivery WS migration**.
+Phase 1.2, 1.3, and 1.4 (substantially) are now complete — see the Status lines on each section. The remaining Phase 1 candidates, in suggested order:
 
-Reason: it is the same risk class as #608, already found in PR #8, and small enough for Mai to execute cleanly under Đào review.
+1. **Phase 1.1 — Hydration nonce mismatch follow-up.** Smallest scope, dev-overlay quality-of-life, decoupled from any gateway/WS work. Good candidate for the next implementation PR.
+2. **Phase 1.5 — #574 legacy migration verification.** Currently classified as fixture-issue (per PR #8 sub-task 5a verification, msg 1291). Needs either a real legacy-install fixture from an upgrade-path user or pre-page instrumentation that can capture the exact `DeviceIdentityUnavailableError` reason. Defer until a fixture is available or accept as a documented limitation.
+3. **Phase 1.6 — `mc-device-token` classification.** Source-side audit; depends on `docs/audit/PR2_DEVICE_TOKEN_FOLLOWUP.md` as starting point. No code change unless the audit surfaces a defect.
+
+The Phase 1.4 design-deferred leftovers (spawn `sessions_spawn`, transcript `chat.history`) and the Phase 1.4 NEEDS DESIGN item (`pipelines/run`) are tracked under "1.4 deferred leftovers" above and should be picked up only after Đào opens explicit design tickets for them.
