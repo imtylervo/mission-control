@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDatabase, db_helpers } from '@/lib/db'
-import { runOpenClaw } from '@/lib/command'
+import { callOpenClawGatewayWS } from '@/lib/openclaw-gateway-ws'
 import { requireRole } from '@/lib/auth'
 import { validateBody, createMessageSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
@@ -55,16 +55,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    await runOpenClaw(
-      [
-        'gateway',
-        'sessions_send',
-        '--session',
-        agent.session_key,
-        '--message',
-        `Message from ${from}: ${message}`
-      ],
-      { timeoutMs: 10000 }
+    await callOpenClawGatewayWS<unknown>(
+      'sessions.send',
+      {
+        key: agent.session_key,
+        message: `Message from ${from}: ${message}`,
+        timeoutMs: 10_000,
+      },
+      { timeoutMs: 10_000 }
     )
 
     db_helpers.createNotification(
