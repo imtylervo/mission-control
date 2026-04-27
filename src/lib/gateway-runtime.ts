@@ -27,6 +27,26 @@ function readOpenClawConfig(): OpenClawGatewayConfig | null {
   }
 }
 
+/**
+ * PR #24 / Phase 2.2 diagnostic surface — return ONLY the allowed-origins
+ * list from `~/.openclaw/openclaw.json#gateway.controlUi.allowedOrigins`,
+ * without any other config (token, port, password). The caller is the
+ * `/api/diagnostics/gateway-origin` route which compares this list to the
+ * browser's actual origin and reports booleans (has_localhost, has_127,
+ * mismatch) — never the raw values, since the allowlist may include
+ * private hostnames operators consider sensitive.
+ *
+ * Returns `null` when the config file is missing or unreadable. Returns
+ * an empty array when the field is present but empty.
+ */
+export function getGatewayAllowedOrigins(): string[] | null {
+  const cfg = readOpenClawConfig()
+  if (!cfg) return null
+  const list = cfg.gateway?.controlUi?.allowedOrigins
+  if (!Array.isArray(list)) return null
+  return list.slice()
+}
+
 export function registerMcAsDashboard(mcUrl: string): { registered: boolean; alreadySet: boolean } {
   const configPath = config.openclawConfigPath
   if (!configPath || !fs.existsSync(configPath)) {
