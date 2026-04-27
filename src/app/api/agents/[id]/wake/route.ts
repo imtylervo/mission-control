@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDatabase, db_helpers } from '@/lib/db'
-import { runOpenClaw } from '@/lib/command'
+import { callOpenClawGatewayWS, GatewayCallError } from '@/lib/openclaw-gateway-ws'
 import { requireRole } from '@/lib/auth'
 import { logger } from '@/lib/logger'
 
@@ -39,16 +39,20 @@ export async function POST(
       customMessage ||
       `Wake up check-in for ${agent.name}. Please review assigned tasks and notifications.`
 
-    const { stdout, stderr } = await runOpenClaw(
-      ['gateway', 'sessions_send', '--session', agent.session_key, '--message', message],
-      { timeoutMs: 10000 }
-    )
-
-    if (stderr && stderr.includes('error')) {
-      return NextResponse.json(
-        { error: stderr.trim() || 'Failed to wake agent' },
-        { status: 500 }
+    try {
+      await callOpenClawGatewayWS<unknown>(
+        'sessions.send',
+        { key: agent.session_key, message, timeoutMs: 10_000 },
+        { timeoutMs: 10_000 }
       )
+    } catch (err) {
+      if (err instanceof GatewayCallError) {
+        return NextResponse.json(
+          { error: err.message || 'Failed to wake agent' },
+          { status: 500 }
+        )
+      }
+      throw err
     }
 
     db_helpers.updateAgentStatus(agent.name, 'idle', 'Manual wake', workspaceId)
@@ -56,7 +60,6 @@ export async function POST(
     return NextResponse.json({
       success: true,
       session_key: agent.session_key,
-      stdout: stdout.trim()
     })
   } catch (error) {
     logger.error({ err: error }, 'POST /api/agents/[id]/wake error')
