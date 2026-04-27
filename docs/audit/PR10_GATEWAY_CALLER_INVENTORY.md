@@ -133,14 +133,28 @@ Plus one indirect callsite via dependency-injected runner (does not appear in th
 
 ## Evidence (grep commands and counts)
 
-Run from the repo root on commit `15c377f`:
+Run from the repo root on commit `15c377f`.
 
-- `grep -rEn 'runOpenClaw\s*\(' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__' | wc -l` → 21 actual call expressions across 15 files. The narrower `runOpenClaw\s*\(` pattern (vs `runOpenClaw\b`) excludes the export declaration in `command.ts`, the `runner = opts.runner ?? runOpenClaw` function-reference in `openclaw-doctor-cache.ts`, dynamic-import bindings, and JSDoc references — leaving only the actual call sites.
-- `grep -rEn 'callOpenClawGateway\s*[(<]' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__' | grep -v 'export\|import' | wc -l` → 17 actual call expressions across 8 files. The `[(<]` after the identifier matches both `callOpenClawGateway(` and the generic-typed form `callOpenClawGateway<T>(`.
-- The literal anti-pattern `'gateway', 'call', 'agent'` (single-quoted, comma-separated, the form actually used in source) is matched by `grep -rEn "['\"]gateway['\"]\s*,\s*['\"]call['\"]\s*,\s*['\"]agent['\"]" --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__'`. It returns 3 hits in non-test code: `notifications/deliver/route.ts:90`, `chat/messages/route.ts:518`, and (with `agent.wait` instead of `agent`) `chat/messages/route.ts:597`. The earlier sub-task report's "literal grep returns 0" was an artefact of using double-quoted literals in the search pattern; the source uses single quotes.
-- The PR #3 source-discipline test (`task-dispatch-source-discipline.test.ts`) guards `task-dispatch.ts` specifically against re-introduction of this pattern; PR 1.3c should extend the same test pattern to cover `notifications/deliver/route.ts` and `chat/messages/route.ts` once those callsites migrate.
+**`runOpenClaw` count.** `grep -rEn 'runOpenClaw\s*\(' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__'` returns 24 raw lines. Three of those are NOT call expressions and must be excluded manually:
 
-No secrets, tokens, or session keys appear in the inventory output. All grep targets are public source patterns.
+- `src/lib/command.ts:79` — the export declaration `export function runOpenClaw(args: string[], options: CommandOptions = {})`
+- `src/lib/openclaw-gateway-ws.ts:4` — JSDoc reference inside a block comment (`* Replaces shell-out via \`runOpenClaw(['gateway', 'call', ...])\``)
+- `src/lib/task-dispatch.ts:690` — single-line comment (`// Native WS replaces the legacy \`runOpenClaw([...gateway call agent`)
+
+After exclusions: **21 actual call expressions** across 15 files. The breakdown — 3 Tier 1 + 3 Tier 2 + 1 wrapper (`openclaw-gateway.ts:45`) + 1 Needs Design (`pipelines/run.ts:137`) + 13 Keep CLI direct calls — sums to 21.
+
+**`callOpenClawGateway` count.** `grep -rEn 'callOpenClawGateway\s*[(<]' --include='*.ts' --include='*.tsx' src/ | grep -v '__tests__' | grep -v 'export\|import'` returns **17** actual call expressions across 8 files. The `[(<]` matches both `callOpenClawGateway(` and the generic-typed form `callOpenClawGateway<T>(`.
+
+**Anti-pattern detection.** The exact literal pattern `['gateway', 'call', 'agent', ...]` is hard to grep against directly because the array elements are on separate source lines (multi-line array literal). Two complementary approaches were used:
+
+- `grep -rn "'agent'," --include='*.ts' src/ | grep -v '__tests__'` returns many hits (the literal `'agent',` appears in agent templates, gateway-ws.ts, etc., not all of them dispatch sites). Cross-referenced against the 21 `runOpenClaw` call expressions above by manually opening each call site and reading the args array — 2 of them have the dispatch shape `['gateway', 'call', 'agent', ...]`: `notifications/deliver/route.ts:90` (args body around lines 92–99) and `chat/messages/route.ts:518` (args body around lines 519–531).
+- `grep -rn "'agent\.wait'," --include='*.ts' src/ | grep -v '__tests__'` returns **1 hit** (`chat/messages/route.ts:601`), which is the args body of the `runOpenClaw` call at `chat/messages/route.ts:597` — the companion `agent.wait` for the `runId` returned by the dispatch at line 518.
+
+So Tier 1 contains 3 distinct call expressions: 2 with `gateway call agent` and 1 with `gateway call agent.wait`.
+
+**Regression-test guard.** The PR #3 source-discipline test (`src/lib/__tests__/task-dispatch-source-discipline.test.ts`) guards `task-dispatch.ts` specifically against re-introduction of the dispatch pattern. PR 1.3c should extend the same test pattern to cover `notifications/deliver/route.ts` and `chat/messages/route.ts` once those callsites migrate.
+
+**Hygiene.** No secrets, tokens, or session keys appear in the inventory output. All grep targets are public source patterns.
 
 ## Done-when (1.3a)
 
