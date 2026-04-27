@@ -13,7 +13,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   DeviceIdentityUnavailableError,
   __setDeviceIdentityStoreForTests,
+  cacheDeviceToken,
   clearDeviceIdentity,
+  getCachedDeviceToken,
   getOrCreateDeviceIdentity,
 } from '@/lib/device-identity'
 import {
@@ -260,7 +262,11 @@ describe('device-identity (PR #574 hardening)', () => {
   describe('clearDeviceIdentity', () => {
     it('clears localStorage AND the IndexedDB-backed key', async () => {
       const id = await getOrCreateDeviceIdentity()
-      localStorage.setItem(STORAGE_DEVICE_TOKEN, 'opaque-token')
+      // Seed BOTH a sessionStorage token (the new home) and a legacy
+      // localStorage token (the pre-Phase-1.7 home). clearDeviceIdentity
+      // must wipe both so a re-pair never inherits stale credentials.
+      sessionStorage.setItem(STORAGE_DEVICE_TOKEN, 'session-token')
+      localStorage.setItem(STORAGE_DEVICE_TOKEN, 'legacy-localstorage-token')
 
       // Sanity precondition.
       expect(await store.load()).not.toBeNull()
@@ -272,7 +278,66 @@ describe('device-identity (PR #574 hardening)', () => {
       expect(localStorage.getItem(STORAGE_PUBKEY)).toBeNull()
       expect(localStorage.getItem(STORAGE_PRIVKEY_LEGACY)).toBeNull()
       expect(localStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
+      expect(sessionStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
       expect(await store.load()).toBeNull()
+    })
+  })
+
+  // Phase 1.7 — mc-device-token storage migration
+  describe('mc-device-token storage (Phase 1.7)', () => {
+    beforeEach(() => {
+      sessionStorage.clear()
+    })
+
+    it('cacheDeviceToken writes to sessionStorage, not localStorage', () => {
+      cacheDeviceToken('opaque-token-A')
+      expect(sessionStorage.getItem(STORAGE_DEVICE_TOKEN)).toBe('opaque-token-A')
+      expect(localStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
+    })
+
+    it('getCachedDeviceToken reads from sessionStorage', () => {
+      sessionStorage.setItem(STORAGE_DEVICE_TOKEN, 'opaque-token-B')
+      expect(getCachedDeviceToken()).toBe('opaque-token-B')
+    })
+
+    it('getCachedDeviceToken returns null when nothing is cached', () => {
+      expect(getCachedDeviceToken()).toBeNull()
+    })
+
+    it('getCachedDeviceToken cleans up legacy localStorage token WITHOUT promoting it', () => {
+      // Pre-Phase-1.7 build wrote the token to localStorage. After this PR
+      // the helper must drop it on first read so it cannot continue under
+      // the new scope; the caller will re-mint via fresh handshake.
+      localStorage.setItem(STORAGE_DEVICE_TOKEN, 'pre-phase17-token')
+      expect(localStorage.getItem(STORAGE_DEVICE_TOKEN)).toBe('pre-phase17-token')
+
+      const result = getCachedDeviceToken()
+
+      // Returns null: nothing in sessionStorage, and we explicitly do NOT
+      // promote the localStorage value.
+      expect(result).toBeNull()
+      // Legacy entry is removed.
+      expect(localStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
+      // sessionStorage stays empty (no promotion).
+      expect(sessionStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
+    })
+
+    it('getCachedDeviceToken returns the sessionStorage value even when a legacy localStorage entry coexists', () => {
+      // Stale localStorage from an old build, fresh sessionStorage from a
+      // post-Phase-1.7 handshake — sessionStorage wins, localStorage is
+      // cleaned up.
+      localStorage.setItem(STORAGE_DEVICE_TOKEN, 'stale-legacy')
+      sessionStorage.setItem(STORAGE_DEVICE_TOKEN, 'fresh-session')
+
+      expect(getCachedDeviceToken()).toBe('fresh-session')
+      expect(localStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
+      expect(sessionStorage.getItem(STORAGE_DEVICE_TOKEN)).toBe('fresh-session')
+    })
+
+    it('cache + read round-trip uses sessionStorage exclusively', () => {
+      cacheDeviceToken('round-trip-token')
+      expect(getCachedDeviceToken()).toBe('round-trip-token')
+      expect(localStorage.getItem(STORAGE_DEVICE_TOKEN)).toBeNull()
     })
   })
 })

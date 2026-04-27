@@ -185,12 +185,13 @@ Follow-on cleanup gated on the first two unblocks:
 ### 1.7 `mc-device-token` storage migration (XSS-exfil hardening)
 - Owner: Đào design, Mai implement
 - Priority: medium-high (security follow-up to Phase 1.6 classification)
+- **Status: ✅ complete via PR #19.** Đào msg 1552 picked option (b) `sessionStorage`. Storage helpers in `src/lib/device-identity.ts` rewritten to read/write `sessionStorage`; pre-Phase-1.7 `localStorage['mc-device-token']` entries are dropped on first read without promotion (so next handshake re-mints under the new scope). All storage operations are best-effort with `try/catch` so private/lockdown browsing modes degrade gracefully. New source-discipline test pins the invariant. See `docs/audit/PR19_PHASE_1_7_DEVICE_TOKEN_SESSIONSTORAGE.md`.
 - Problem:
   - Phase 1.6 classified `mc-device-token` as bearer-equivalent. Storing it in `localStorage` makes it trivially XSS-readable, defeating the same threat model PR #574 addressed for the private key (which lives in IndexedDB with `extractable: false`).
 - Decision points (Đào to pick before implementation):
   - **(a) in-memory only** — drop on tab close; force re-pair on reload. Highest hardening, biggest UX cost.
-  - **(b) `sessionStorage`** — survives reloads within tab, dropped at close. Mid-tier hardening; still same-origin JS-readable so only mitigates *persisted* XSS exfil.
-  - **(c) `httpOnly` BFF cookie** — JS-unreadable; requires the Mission Control server to proxy the gateway connect frame. Highest practical hardening, biggest implementation cost.
+  - **(b) `sessionStorage` ✅ chosen** — survives reloads within tab, dropped at close. Mid-tier hardening; still same-origin JS-readable so only mitigates *persisted* XSS exfil.
+  - **(c) `httpOnly` BFF cookie** — JS-unreadable; requires the Mission Control server to proxy the gateway connect frame. Highest practical hardening, biggest implementation cost. Future option if same-tab residual risk turns into incident.
 - Tasks (after option pick):
   - Move `cacheDeviceToken` / `getCachedDeviceToken` off `localStorage`.
   - Update `src/lib/websocket.ts` consumers (lines `226`, `233`, `298`, `402-403`).
@@ -342,7 +343,7 @@ Phase 1.2, 1.3, and 1.4 (substantially) are now complete — see the Status line
 
 1. **Phase 1.1 — Hydration nonce mismatch follow-up.** PR #15 applied Option A (`suppressHydrationWarning`). PR #17 is a draft harness that runs the dashboard-route verification; it is **PENDING dashboard auth** because the rotated admin password file is not on the box. Once a credential is restored, run the harness and either close the row ✅ or escalate to Option D (Next.js bump).
 2. ~~**Phase 1.5 — #574 legacy migration verification.**~~ **Done via PR #16.** Migration verified end-to-end on Chromium (with the real fixture format from pre-#574 commit `1411296`). The Camoufox partial-failure observed in PR #5 sub-task 5a is reclassified as a Firefox-side CryptoKey-IDB roundtrip quirk, not an MC bug. Code path unchanged.
-3. ~~**Phase 1.6 — `mc-device-token` classification.**~~ **Done via PR #18.** Classified **bearer-equivalent** based on local OpenClaw `2026.4.24` gateway source: `verifyDeviceToken` runs as a fallback auth path that grants `authMethod="device-token"` without requiring a fresh `device.signature`. Storage-migration implementation is tracked as Phase 1.7 below.
-4. **Phase 1.7 — `mc-device-token` storage migration design.** Pick a storage strategy — (a) in-memory only, (b) `sessionStorage`, or (c) `httpOnly` BFF cookie — before implementation. Đào design call; implementation PR follows the decision.
+3. ~~**Phase 1.6 — `mc-device-token` classification.**~~ **Done via PR #18.** Classified **bearer-equivalent** based on local OpenClaw `2026.4.24` gateway source: `verifyDeviceToken` runs as a fallback auth path that grants `authMethod="device-token"` without requiring a fresh `device.signature`.
+4. ~~**Phase 1.7 — `mc-device-token` storage migration.**~~ **Done via PR #19.** Token moved from `localStorage` to `sessionStorage` (option (b) per Đào design call). Persistent-XSS / cross-tab / disk-dump exfil paths closed; same-tab same-origin JS read remains as residual (mitigated by future option (c) `httpOnly` BFF cookie if needed).
 
 The Phase 1.4 design-deferred leftovers (spawn `sessions_spawn`, transcript `chat.history`) and the Phase 1.4 NEEDS DESIGN item (`pipelines/run`) are tracked under "1.4 deferred leftovers" above and should be picked up only after Đào opens explicit design tickets for them.
