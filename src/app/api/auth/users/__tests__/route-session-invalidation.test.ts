@@ -40,27 +40,27 @@ const targetUser = {
   role: 'operator' as const,
 }
 
-const updateUserMock = vi.fn()
-const deleteUserMock = vi.fn()
-const destroyAllUserSessionsMock = vi.fn()
-const getUserByIdMock = vi.fn()
-const getUserFromRequestMock = vi.fn()
-const requireRoleMock = vi.fn(() => baseUser)
-const logAuditEventMock = vi.fn()
+const updateUserMock = vi.fn<any[], any>()
+const deleteUserMock = vi.fn<any[], any>()
+const destroyAllUserSessionsMock = vi.fn<any[], any>()
+const getUserByIdMock = vi.fn<any[], any>()
+const getUserFromRequestMock = vi.fn<any[], any>()
+const requireRoleMock = vi.fn<any[], any>(() => baseUser)
+const logAuditEventMock = vi.fn<any[], any>()
 
 vi.mock('@/lib/auth', () => ({
   getUserFromRequest: (req: Request) => getUserFromRequestMock(req),
   getAllUsers: vi.fn(() => []),
   createUser: vi.fn(),
-  updateUser: (...args: any[]) => updateUserMock(...args),
-  deleteUser: (...args: any[]) => deleteUserMock(...args),
-  destroyAllUserSessions: (...args: any[]) => destroyAllUserSessionsMock(...args),
-  getUserById: (...args: any[]) => getUserByIdMock(...args),
-  requireRole: (...args: any[]) => requireRoleMock(...args),
+  updateUser: updateUserMock,
+  deleteUser: deleteUserMock,
+  destroyAllUserSessions: destroyAllUserSessionsMock,
+  getUserById: getUserByIdMock,
+  requireRole: requireRoleMock,
 }))
 
 vi.mock('@/lib/db', () => ({
-  logAuditEvent: (...args: any[]) => logAuditEventMock(...args),
+  logAuditEvent: logAuditEventMock,
 }))
 
 vi.mock('@/lib/validation', () => ({
