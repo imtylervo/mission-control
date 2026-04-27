@@ -1,20 +1,38 @@
 #!/usr/bin/env bash
 # Mission Control Security Audit
 # Run: bash scripts/security-audit.sh [--env-file .env]
+#   or  bash scripts/security-audit.sh .env.local       (positional)
 
-set -euo pipefail
+# Diagnostic script — fail-soft. See station-doctor.sh for the same
+# `((COUNTER++))` + `set -e` post-increment-of-zero gotcha; avoid it here too.
+set -uo pipefail
 
 SCORE=0
 MAX_SCORE=0
 ISSUES=()
 
-pass() { echo "  [PASS] $1"; ((SCORE++)); ((MAX_SCORE++)); }
-fail() { echo "  [FAIL] $1"; ISSUES+=("$1"); ((MAX_SCORE++)); }
-warn() { echo "  [WARN] $1"; ((MAX_SCORE++)); }
+pass() { echo "  [PASS] $1"; SCORE=$((SCORE+1)); MAX_SCORE=$((MAX_SCORE+1)); }
+fail() { echo "  [FAIL] $1"; ISSUES+=("$1"); MAX_SCORE=$((MAX_SCORE+1)); }
+warn() { echo "  [WARN] $1"; MAX_SCORE=$((MAX_SCORE+1)); }
 info() { echo "  [INFO] $1"; }
 
-# Load .env if exists
-ENV_FILE="${1:-.env}"
+# Parse args. Accept either `--env-file PATH` (matches the usage line in
+# the comment header) or a single positional path. Anything else falls
+# back to ".env".
+ENV_FILE=".env"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file)
+      shift
+      ENV_FILE="${1:-.env}"
+      shift
+      ;;
+    *)
+      ENV_FILE="$1"
+      shift
+      ;;
+  esac
+done
 if [[ -f "$ENV_FILE" ]]; then
   while IFS='=' read -r key value; do
     [[ "$key" =~ ^#.*$ ]] && continue
@@ -29,7 +47,11 @@ echo ""
 # 1. .env file permissions
 echo "--- File Permissions ---"
 if [[ -f "$ENV_FILE" ]]; then
-  perms=$(stat -f '%A' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null)
+  # GNU stat (Linux) first; BSD stat (macOS) fallback. The previous order
+  # ran BSD-style `-f` first, which on GNU stat means "filesystem stat" and
+  # silently emits a multi-line "File:/Type:/Block size:" dump on stdout,
+  # which then got pasted into the failure message.
+  perms=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%A' "$ENV_FILE" 2>/dev/null)
   if [[ "$perms" == "600" ]]; then
     pass ".env permissions are 600 (owner read/write only)"
   else

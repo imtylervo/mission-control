@@ -4,7 +4,13 @@
 #
 # Usage: bash scripts/station-doctor.sh [--port PORT]
 
-set -euo pipefail
+# Diagnostic script — fail-soft. We want every check to run even when an
+# earlier one reports a non-zero status. `set -e` combined with bash's
+# `((COUNTER++))` post-increment kills the script on the FIRST PASS (the
+# expression returns the pre-increment value 0, which errexit treats as
+# failure). Use `set -uo pipefail` only and assignment-form increments
+# below so counters survive the run.
+set -uo pipefail
 
 MC_PORT="${1:-3000}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,9 +27,9 @@ PASS=0
 WARN=0
 FAIL=0
 
-pass() { echo "  [PASS] $1"; ((PASS++)); }
-warn() { echo "  [WARN] $1"; ((WARN++)); }
-fail() { echo "  [FAIL] $1"; ((FAIL++)); }
+pass() { echo "  [PASS] $1"; PASS=$((PASS+1)); }
+warn() { echo "  [WARN] $1"; WARN=$((WARN+1)); }
+fail() { echo "  [FAIL] $1"; FAIL=$((FAIL+1)); }
 info() { echo "  [INFO] $1"; }
 
 echo "=== Mission Control Station Doctor ==="
@@ -66,8 +72,12 @@ else
 fi
 
 # ── 3. API health ─────────────────────────────────────────────────────────────
-# Try unauthenticated — will get 401 but proves the server is up
-http_code=$(curl -sf -o /dev/null -w "%{http_code}" "http://localhost:$MC_PORT/api/status?action=health" 2>/dev/null || echo "000")
+# Try unauthenticated — will get 401 but proves the server is up.
+# NB: drop curl -f and the `|| echo "000"` fallback. With -f, curl on a
+# connection failure exits non-zero AND -w "%{http_code}" still prints
+# "000" on stdout, so the OR fallback would concatenate to "000000". Use
+# -s + an OR assignment that overrides only when curl itself fails.
+http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$MC_PORT/api/status?action=health" 2>/dev/null) || http_code="000"
 if [[ "$http_code" == "200" ]]; then
   pass "Health API responding (200)"
 elif [[ "$http_code" == "401" ]]; then
