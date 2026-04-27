@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { formatModelName, buildTaskStatParts, extractWsHost } from '@/lib/agent-card-helpers'
+import {
+  formatModelName,
+  formatProviderName,
+  formatProviderRoute,
+  formatFullProviderModel,
+  buildTaskStatParts,
+  extractWsHost,
+} from '@/lib/agent-card-helpers'
 
 describe('formatModelName', () => {
   it('strips provider prefix from model ID', () => {
@@ -31,6 +38,74 @@ describe('formatModelName', () => {
   it('returns null for non-string primary', () => {
     expect(formatModelName({ model: { primary: 42 } })).toBeNull()
     expect(formatModelName({ model: { primary: true } })).toBeNull()
+  })
+})
+
+/**
+ * Phase 5.1 — provider/model visibility helpers
+ */
+describe('formatProviderName', () => {
+  it('extracts provider prefix from a 2-segment id', () => {
+    expect(formatProviderName({ model: { primary: 'anthropic/claude-opus-4-5' } })).toBe('anthropic')
+  })
+
+  it('extracts the FIRST segment for a 9router-style nested id', () => {
+    expect(formatProviderName({ model: { primary: '9router/cx/gpt-5.5' } })).toBe('9router')
+  })
+
+  it('returns null when there is no provider prefix', () => {
+    expect(formatProviderName({ model: { primary: 'gpt-4o' } })).toBeNull()
+  })
+
+  it('returns null for missing or non-string config', () => {
+    expect(formatProviderName(null)).toBeNull()
+    expect(formatProviderName({})).toBeNull()
+    expect(formatProviderName({ model: { primary: 42 } })).toBeNull()
+    expect(formatProviderName({ model: { primary: '' } })).toBeNull()
+  })
+})
+
+describe('formatProviderRoute', () => {
+  it('extracts the middle route segment for 9router/cx/gpt-5.5', () => {
+    expect(formatProviderRoute({ model: { primary: '9router/cx/gpt-5.5' } })).toBe('cx')
+  })
+
+  it('joins multiple intermediate segments', () => {
+    expect(formatProviderRoute({ model: { primary: '9router/cx/proxy/gpt-5.5' } })).toBe('cx/proxy')
+  })
+
+  it('returns null for a 2-segment id (provider/model only)', () => {
+    expect(formatProviderRoute({ model: { primary: 'anthropic/claude-opus-4-5' } })).toBeNull()
+  })
+
+  it('returns null for a 1-segment id (no provider)', () => {
+    expect(formatProviderRoute({ model: { primary: 'gpt-4o' } })).toBeNull()
+  })
+
+  it('returns null for missing or non-string config', () => {
+    expect(formatProviderRoute(null)).toBeNull()
+    expect(formatProviderRoute({})).toBeNull()
+    expect(formatProviderRoute({ model: { primary: 42 } })).toBeNull()
+    expect(formatProviderRoute({ model: { primary: '' } })).toBeNull()
+  })
+})
+
+describe('formatFullProviderModel', () => {
+  it('returns the full id verbatim for nested ids', () => {
+    expect(formatFullProviderModel({ model: { primary: '9router/cx/gpt-5.5' } })).toBe('9router/cx/gpt-5.5')
+  })
+
+  it('returns the full id verbatim for 2-segment ids', () => {
+    expect(formatFullProviderModel({ model: { primary: 'anthropic/claude-opus-4-5' } })).toBe('anthropic/claude-opus-4-5')
+  })
+
+  it('returns the model name verbatim when no prefix', () => {
+    expect(formatFullProviderModel({ model: { primary: 'gpt-4o' } })).toBe('gpt-4o')
+  })
+
+  it('returns null for missing config', () => {
+    expect(formatFullProviderModel(null)).toBeNull()
+    expect(formatFullProviderModel({})).toBeNull()
   })
 })
 

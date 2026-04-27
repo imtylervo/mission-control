@@ -21,7 +21,7 @@ import {
   ModelsTab,
   CreateAgentModal
 } from './agent-detail-tabs'
-import { formatModelName, buildTaskStatParts } from '@/lib/agent-card-helpers'
+import { formatModelName, formatProviderName, formatProviderRoute, formatFullProviderModel, buildTaskStatParts } from '@/lib/agent-card-helpers'
 import { useMissionControl, type Agent } from '@/store'
 
 const log = createClientLogger('AgentSquadPhase3')
@@ -418,6 +418,17 @@ export function AgentSquadPanelPhase3() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {agents.map(agent => {
               const modelName = formatModelName(agent.config)
+              const providerName = formatProviderName(agent.config)
+              const providerRoute = formatProviderRoute(agent.config)
+              const fullProviderModel = formatFullProviderModel(agent.config)
+              // Phase 5.1: build a routing-chain segment shown next to the role.
+              // Examples:
+              //   anthropic/claude-opus-4-5 → "anthropic · claude-opus-4-5"
+              //   9router/cx/gpt-5.5        → "9router/cx · gpt-5.5"
+              //   gpt-4o                    → "gpt-4o"
+              const providerChainPrefix = providerName
+                ? (providerRoute ? `${providerName}/${providerRoute}` : providerName)
+                : null
               const taskStatsLine = buildTaskStatParts(agent.taskStats)
 
               return (
@@ -448,8 +459,14 @@ export function AgentSquadPanelPhase3() {
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {agent.role}{modelName && <> · <span className="font-mono text-muted-foreground/80">{modelName}</span></>}
+                        <p className="text-xs text-muted-foreground truncate" title={fullProviderModel || undefined}>
+                          {agent.role}
+                          {providerChainPrefix && (
+                            <> · <span className="font-mono text-muted-foreground/60">{providerChainPrefix}</span></>
+                          )}
+                          {modelName && (
+                            <> · <span className="font-mono text-muted-foreground/80">{modelName}</span></>
+                          )}
                         </p>
                       </div>
                     </div>
