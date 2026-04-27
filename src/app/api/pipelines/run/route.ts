@@ -117,6 +117,33 @@ export async function POST(request: NextRequest) {
 }
 
 /** Spawn a single pipeline step using `openclaw agent` */
+/**
+ * Extract the agent's response text from a gateway `agent` WS result.
+ *
+ * Mirrors the private `extractAgentText` helper in
+ * `src/lib/openclaw-gateway-ws.ts` to keep the result-shape contract local
+ * and stable: gateway may return `{payloads:[{text}]}`, `{text}`, or
+ * `{choices:[{message:{content}}]}` depending on the agent variant.
+ */
+function extractPipelineAgentText(result: unknown): string {
+  if (!result || typeof result !== 'object') return ''
+  const r = result as Record<string, unknown>
+
+  if (Array.isArray(r.payloads) && r.payloads.length > 0) {
+    const p0 = r.payloads[0] as Record<string, unknown> | undefined
+    const payloadText = typeof p0?.text === 'string' ? p0.text : ''
+    if (payloadText) return payloadText
+  }
+  if (typeof r.text === 'string' && r.text) return r.text
+  if (Array.isArray(r.choices) && r.choices.length > 0) {
+    const c0 = r.choices[0] as Record<string, unknown> | undefined
+    const message = c0?.message as Record<string, unknown> | undefined
+    const content = typeof message?.content === 'string' ? message.content : ''
+    if (content) return content
+  }
+  return ''
+}
+
 async function spawnStep(
   db: ReturnType<typeof getDatabase>,
   pipelineName: string,
@@ -127,20 +154,33 @@ async function spawnStep(
   workspaceId: number
 ): Promise<{ success: boolean; stdout?: string; error?: string }> {
   try {
-    const { runOpenClaw } = await import('@/lib/command')
-    const args = [
-      'agent',
-      '--message', `[Pipeline: ${pipelineName} | Step ${stepIdx + 1}] ${template.task_prompt}`,
-      '--timeout', String(template.timeout_seconds),
-      '--json',
-    ]
-    const { stdout } = await runOpenClaw(args, { timeoutMs: 15000 })
+    // PR #22 / Phase 1.4: migrated from `runOpenClaw(['agent', ...])` to the
+    // gateway WS `agent` method. One-shot deferred result, identical contract:
+    // host blocks ≤ 15 s for the gateway to return; the gateway-side run is
+    // bounded by the template's `timeout_seconds`. Using `deliver: true`
+    // makes the result include `payloads[0].text` (handled by
+    // `extractPipelineAgentText`). A deterministic idempotencyKey makes
+    // retries safe — the gateway dedupes per pipeline-step-run.
+    const { callOpenClawGatewayWS } = await import('@/lib/openclaw-gateway-ws')
+    const message = `[Pipeline: ${pipelineName} | Step ${stepIdx + 1}] ${template.task_prompt}`
+    const params: Record<string, unknown> = {
+      message,
+      deliver: true,
+      timeout: template.timeout_seconds,
+      idempotencyKey: `pipeline-${runId}-step-${stepIdx}`,
+    }
+    if (template.model) params.model = template.model
+    const defaultAgentId = process.env.OPENCLAW_DEFAULT_AGENT_ID
+    if (defaultAgentId) params.agentId = defaultAgentId
+
+    const result = await callOpenClawGatewayWS<unknown>('agent', params, { timeoutMs: 15000 })
+    const text = extractPipelineAgentText(result)
 
     const spawnId = `pipeline-${runId}-step-${stepIdx}-${Date.now()}`
     steps[stepIdx].spawn_id = spawnId
     db.prepare('UPDATE pipeline_runs SET steps_snapshot = ? WHERE id = ? AND workspace_id = ?').run(JSON.stringify(steps), runId, workspaceId)
 
-    return { success: true, stdout: stdout.trim() }
+    return { success: true, stdout: text.trim() }
   } catch (err: any) {
     // Spawn failed - record error but keep pipeline running for manual advance
     steps[stepIdx].error = err.message
