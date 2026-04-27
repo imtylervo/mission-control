@@ -1,9 +1,17 @@
 'use client'
 
+import { getPersonaById } from '@/lib/avatar-gallery'
+
 interface AgentAvatarProps {
   name?: string | null
-  size?: 'xs' | 'sm' | 'md'
+  size?: 'xs' | 'sm' | 'md' | 'lg'
   className?: string
+  /**
+   * Phase 5.5 — when set, the avatar renders the matching gallery
+   * persona's emoji over the persona's hue. Falls back to the existing
+   * initials-on-hashed-hue look when the id is unknown / null.
+   */
+  personaId?: string | null
 }
 
 function getInitials(name: string): string {
@@ -38,13 +46,28 @@ const sizeClasses: Record<NonNullable<AgentAvatarProps['size']>, string> = {
   xs: 'w-5 h-5 text-[10px]',
   sm: 'w-6 h-6 text-[10px]',
   md: 'w-8 h-8 text-xs',
+  lg: 'w-12 h-12 text-base',
 }
 
-export function AgentAvatar({ name, size = 'sm', className = '' }: AgentAvatarProps) {
+export function AgentAvatar({ name, size = 'sm', className = '', personaId }: AgentAvatarProps) {
   const safeName = name ?? ''
+  const persona = getPersonaById(personaId)
+
+  if (persona) {
+    return (
+      <div
+        className={`rounded-full flex items-center justify-center shrink-0 ${sizeClasses[size]} ${className}`}
+        style={{ backgroundColor: `hsl(${persona.hue} 60% 35%)`, color: 'hsl(0 0% 98%)' }}
+        title={safeName ? `${safeName} · ${persona.label}` : persona.label}
+        aria-label={safeName ? `${safeName} avatar (${persona.label})` : persona.label}
+      >
+        <span aria-hidden>{persona.emoji}</span>
+      </div>
+    )
+  }
+
   const initials = getInitials(safeName)
   const colors = getAvatarColors(safeName)
-
   return (
     <div
       className={`rounded-full flex items-center justify-center font-semibold shrink-0 ${sizeClasses[size]} ${className}`}

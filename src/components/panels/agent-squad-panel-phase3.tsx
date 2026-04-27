@@ -23,6 +23,8 @@ import {
 } from './agent-detail-tabs'
 import { formatModelName, formatProviderName, formatProviderRoute, formatFullProviderModel, buildTaskStatParts } from '@/lib/agent-card-helpers'
 import { AgentEvalCard } from '@/components/panels/agent-eval-card'
+import { AvatarGalleryPicker } from '@/components/ui/avatar-gallery-picker'
+import { readPersonaFromAgentConfig, buildAvatarConfigPatch } from '@/lib/avatar-gallery'
 import { useMissionControl, type Agent } from '@/store'
 
 const log = createClientLogger('AgentSquadPhase3')
@@ -444,7 +446,11 @@ export function AgentSquadPanelPhase3() {
                   {/* Header: avatar + name + status */}
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <AgentAvatar name={agent.name} size="md" />
+                      <AgentAvatar
+                        name={agent.name}
+                        size="md"
+                        personaId={readPersonaFromAgentConfig(agent.config)?.id ?? null}
+                      />
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <h3 className="font-semibold text-foreground truncate">{agent.name}</h3>
@@ -613,7 +619,7 @@ function AgentDetailModalPhase3({
   onDelete: (agentId: number, removeWorkspace: boolean) => Promise<void>
 }) {
   const [agentState, setAgentState] = useState<Agent & { config?: any; working_memory?: string }>(agent as Agent & { config?: any; working_memory?: string })
-  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models' | 'evals'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models' | 'evals' | 'avatar'>('overview')
   const [editing, setEditing] = useState(false)
   const [formData, setFormData] = useState({
     role: agent.role,
@@ -850,7 +856,8 @@ function AgentDetailModalPhase3({
     { id: 'tasks', label: 'Tasks', icon: 'T' },
     { id: 'config', label: 'Config', icon: 'C' },
     { id: 'activity', label: 'Activity', icon: 'A' },
-    { id: 'evals', label: 'Evals', icon: 'E' }
+    { id: 'evals', label: 'Evals', icon: 'E' },
+    { id: 'avatar', label: 'Avatar', icon: 'V' }
   ]
 
   const handleDelete = async (removeWorkspace: boolean) => {
@@ -1065,6 +1072,48 @@ function AgentDetailModalPhase3({
           {activeTab === 'evals' && (
             <div className="p-4">
               <AgentEvalCard agentName={agentState.name} />
+            </div>
+          )}
+
+          {activeTab === 'avatar' && (
+            <div className="p-4 space-y-4">
+              <div className="flex items-center gap-3">
+                <AgentAvatar
+                  name={agentState.name}
+                  size="lg"
+                  personaId={readPersonaFromAgentConfig((agentState as any).config)?.id ?? null}
+                />
+                <div className="text-sm">
+                  <div className="font-semibold text-foreground">{agentState.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {readPersonaFromAgentConfig((agentState as any).config)?.label || 'No persona — using initials fallback'}
+                  </div>
+                </div>
+              </div>
+              <AvatarGalleryPicker
+                value={readPersonaFromAgentConfig((agentState as any).config)?.id ?? null}
+                onChange={async (personaId) => {
+                  try {
+                    const patch = buildAvatarConfigPatch(personaId)
+                    const currentConfig = (agentState as any).config || {}
+                    const newConfig = { ...currentConfig, ...patch }
+                    const res = await fetch('/api/agents', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name: agentState.name, config: newConfig }),
+                    })
+                    if (res.ok) {
+                      setAgentState((prev) => ({ ...prev, config: newConfig }))
+                      onUpdate()
+                    }
+                  } catch (err) {
+                    log.error('Failed to update avatar persona', { err })
+                  }
+                }}
+              />
+              <p className="text-xs text-muted-foreground/80">
+                Pick a persona to make this agent visually distinct on the squad cards. Selection is saved to <code>agent.config.avatar.persona</code>; clearing falls back to the initials avatar.
+              </p>
             </div>
           )}
         </div>
