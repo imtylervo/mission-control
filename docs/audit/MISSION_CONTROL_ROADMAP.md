@@ -157,6 +157,7 @@ Follow-on cleanup gated on the first two unblocks:
 ### 1.5 #574 legacy migration verification follow-up
 - Owner: Đào design, Mai execute if feasible
 - Priority: medium
+- **Status: ✅ complete via PR #16. Migration is VERIFIED on Chromium end-to-end. The earlier partial-failure observed on Camoufox/Firefox during PR #5 sub-task 5a is documented as a Firefox-side CryptoKey-IDB roundtrip quirk, NOT an MC app bug.** Fixture format was confirmed valid by source review of pre-#574 commit `1411296`. See `docs/audit/PR16_PHASE_1_5_LEGACY_MIGRATION_VERIFICATION.md` for the full evidence + reproducible test script at `docs/audit/scripts/pr16-mc-574-migration-test.js`.
 - Problem:
   - Fresh IDB device identity is verified; legacy localStorage migration was only partially exercised with synthetic fixture.
 - Tasks:
@@ -316,7 +317,7 @@ Goal: make this maintainable and potentially upstreamable.
 Phase 1.2, 1.3, and 1.4 (substantially) are now complete — see the Status lines on each section. The remaining Phase 1 candidates, in suggested order:
 
 1. **Phase 1.1 — Hydration nonce mismatch follow-up.** Smallest scope, dev-overlay quality-of-life, decoupled from any gateway/WS work. Good candidate for the next implementation PR.
-2. **Phase 1.5 — #574 legacy migration verification.** Currently classified as fixture-issue (per PR #8 sub-task 5a verification, msg 1291). Needs either a real legacy-install fixture from an upgrade-path user or pre-page instrumentation that can capture the exact `DeviceIdentityUnavailableError` reason. Defer until a fixture is available or accept as a documented limitation.
+2. ~~**Phase 1.5 — #574 legacy migration verification.**~~ **Done via PR #16.** Migration verified end-to-end on Chromium (with the real fixture format from pre-#574 commit `1411296`). The Camoufox partial-failure observed in PR #5 sub-task 5a is reclassified as a Firefox-side CryptoKey-IDB roundtrip quirk, not an MC bug. Code path unchanged.
 3. **Phase 1.6 — `mc-device-token` classification.** Source-side audit; depends on `docs/audit/PR2_DEVICE_TOKEN_FOLLOWUP.md` as starting point. No code change unless the audit surfaces a defect.
 
 The Phase 1.4 design-deferred leftovers (spawn `sessions_spawn`, transcript `chat.history`) and the Phase 1.4 NEEDS DESIGN item (`pipelines/run`) are tracked under "1.4 deferred leftovers" above and should be picked up only after Đào opens explicit design tickets for them.
