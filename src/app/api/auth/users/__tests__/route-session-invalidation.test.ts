@@ -40,27 +40,31 @@ const targetUser = {
   role: 'operator' as const,
 }
 
-const updateUserMock = vi.fn<any[], any>()
-const deleteUserMock = vi.fn<any[], any>()
-const destroyAllUserSessionsMock = vi.fn<any[], any>()
-const getUserByIdMock = vi.fn<any[], any>()
-const getUserFromRequestMock = vi.fn<any[], any>()
-const requireRoleMock = vi.fn<any[], any>(() => baseUser)
-const logAuditEventMock = vi.fn<any[], any>()
+// vi.mock factories are hoisted ABOVE const declarations, so the mocks
+// they reference must come from vi.hoisted() to be available at hoist time.
+const mocks = vi.hoisted(() => ({
+  updateUser: vi.fn() as any,
+  deleteUser: vi.fn() as any,
+  destroyAllUserSessions: vi.fn() as any,
+  getUserById: vi.fn() as any,
+  getUserFromRequest: vi.fn() as any,
+  requireRole: vi.fn() as any,
+  logAuditEvent: vi.fn() as any,
+}))
 
 vi.mock('@/lib/auth', () => ({
-  getUserFromRequest: (req: Request) => getUserFromRequestMock(req),
+  getUserFromRequest: mocks.getUserFromRequest,
   getAllUsers: vi.fn(() => []),
   createUser: vi.fn(),
-  updateUser: updateUserMock,
-  deleteUser: deleteUserMock,
-  destroyAllUserSessions: destroyAllUserSessionsMock,
-  getUserById: getUserByIdMock,
-  requireRole: requireRoleMock,
+  updateUser: mocks.updateUser,
+  deleteUser: mocks.deleteUser,
+  destroyAllUserSessions: mocks.destroyAllUserSessions,
+  getUserById: mocks.getUserById,
+  requireRole: mocks.requireRole,
 }))
 
 vi.mock('@/lib/db', () => ({
-  logAuditEvent: logAuditEventMock,
+  logAuditEvent: mocks.logAuditEvent,
 }))
 
 vi.mock('@/lib/validation', () => ({
@@ -84,13 +88,13 @@ function makeRequest(url: string, init?: RequestInit): Request {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  getUserFromRequestMock.mockReturnValue(baseUser)
+  mocks.getUserFromRequest.mockReturnValue(baseUser)
 })
 
 describe('PUT /api/auth/users — password change invalidates target sessions', () => {
   it('calls destroyAllUserSessions when the admin sets a new password', async () => {
-    getUserByIdMock.mockReturnValue({ ...targetUser })
-    updateUserMock.mockReturnValue({ ...targetUser })
+    mocks.getUserById.mockReturnValue({ ...targetUser })
+    mocks.updateUser.mockReturnValue({ ...targetUser })
 
     const req = makeRequest('http://test/api/auth/users', {
       method: 'PUT',
@@ -100,17 +104,17 @@ describe('PUT /api/auth/users — password change invalidates target sessions', 
     const res = await PUT(req as any)
     expect(res.status).toBe(200)
 
-    expect(updateUserMock).toHaveBeenCalledOnce()
-    expect(updateUserMock.mock.calls[0][1].password).toBe('new-very-long-password')
+    expect(mocks.updateUser).toHaveBeenCalledOnce()
+    expect(mocks.updateUser.mock.calls[0][1].password).toBe('new-very-long-password')
 
     // The session-invalidation call is the heart of the fix.
-    expect(destroyAllUserSessionsMock).toHaveBeenCalledOnce()
-    expect(destroyAllUserSessionsMock).toHaveBeenCalledWith(targetUser.id)
+    expect(mocks.destroyAllUserSessions).toHaveBeenCalledOnce()
+    expect(mocks.destroyAllUserSessions).toHaveBeenCalledWith(targetUser.id)
   })
 
   it('does NOT call destroyAllUserSessions when only display_name/role/email change', async () => {
-    getUserByIdMock.mockReturnValue({ ...targetUser })
-    updateUserMock.mockReturnValue({ ...targetUser, display_name: 'new name' })
+    mocks.getUserById.mockReturnValue({ ...targetUser })
+    mocks.updateUser.mockReturnValue({ ...targetUser, display_name: 'new name' })
 
     const req = makeRequest('http://test/api/auth/users', {
       method: 'PUT',
@@ -120,15 +124,15 @@ describe('PUT /api/auth/users — password change invalidates target sessions', 
     const res = await PUT(req as any)
     expect(res.status).toBe(200)
 
-    expect(destroyAllUserSessionsMock).not.toHaveBeenCalled()
+    expect(mocks.destroyAllUserSessions).not.toHaveBeenCalled()
   })
 
   it('does NOT call destroyAllUserSessions when password is the empty string (no-op)', async () => {
     // The route normalises `password: ''` to `undefined` before passing to
     // updateUser, so no actual password change occurs. Session
     // invalidation must follow the same gate.
-    getUserByIdMock.mockReturnValue({ ...targetUser })
-    updateUserMock.mockReturnValue({ ...targetUser })
+    mocks.getUserById.mockReturnValue({ ...targetUser })
+    mocks.updateUser.mockReturnValue({ ...targetUser })
 
     const req = makeRequest('http://test/api/auth/users', {
       method: 'PUT',
@@ -138,12 +142,12 @@ describe('PUT /api/auth/users — password change invalidates target sessions', 
     const res = await PUT(req as any)
     expect(res.status).toBe(200)
 
-    expect(destroyAllUserSessionsMock).not.toHaveBeenCalled()
+    expect(mocks.destroyAllUserSessions).not.toHaveBeenCalled()
   })
 
   it('audit event records sessions_invalidated:1 when password changes', async () => {
-    getUserByIdMock.mockReturnValue({ ...targetUser })
-    updateUserMock.mockReturnValue({ ...targetUser })
+    mocks.getUserById.mockReturnValue({ ...targetUser })
+    mocks.updateUser.mockReturnValue({ ...targetUser })
 
     const req = makeRequest('http://test/api/auth/users', {
       method: 'PUT',
@@ -152,8 +156,8 @@ describe('PUT /api/auth/users — password change invalidates target sessions', 
     })
     await PUT(req as any)
 
-    expect(logAuditEventMock).toHaveBeenCalledOnce()
-    const evt = logAuditEventMock.mock.calls[0][0]
+    expect(mocks.logAuditEvent).toHaveBeenCalledOnce()
+    const evt = mocks.logAuditEvent.mock.calls[0][0]
     expect(evt.action).toBe('user_update')
     expect(evt.detail.password_changed).toBe(true)
     expect(evt.detail.sessions_invalidated).toBe(1)
@@ -162,18 +166,18 @@ describe('PUT /api/auth/users — password change invalidates target sessions', 
 
 describe('DELETE /api/auth/users — accepts query string OR body', () => {
   it('accepts ?id=NN in the query string', async () => {
-    getUserByIdMock.mockReturnValue({ ...targetUser })
-    deleteUserMock.mockReturnValue(true)
+    mocks.getUserById.mockReturnValue({ ...targetUser })
+    mocks.deleteUser.mockReturnValue(true)
 
     const req = makeRequest(`http://test/api/auth/users?id=${targetUser.id}`, { method: 'DELETE' })
     const res = await DELETE(req as any)
     expect(res.status).toBe(200)
-    expect(deleteUserMock).toHaveBeenCalledWith(targetUser.id)
+    expect(mocks.deleteUser).toHaveBeenCalledWith(targetUser.id)
   })
 
   it('accepts {id} in the JSON body', async () => {
-    getUserByIdMock.mockReturnValue({ ...targetUser })
-    deleteUserMock.mockReturnValue(true)
+    mocks.getUserById.mockReturnValue({ ...targetUser })
+    mocks.deleteUser.mockReturnValue(true)
 
     const req = makeRequest('http://test/api/auth/users', {
       method: 'DELETE',
@@ -182,27 +186,27 @@ describe('DELETE /api/auth/users — accepts query string OR body', () => {
     })
     const res = await DELETE(req as any)
     expect(res.status).toBe(200)
-    expect(deleteUserMock).toHaveBeenCalledWith(targetUser.id)
+    expect(mocks.deleteUser).toHaveBeenCalledWith(targetUser.id)
   })
 
   it('returns 400 when neither query nor body provides id', async () => {
     const req = makeRequest('http://test/api/auth/users', { method: 'DELETE' })
     const res = await DELETE(req as any)
     expect(res.status).toBe(400)
-    expect(deleteUserMock).not.toHaveBeenCalled()
+    expect(mocks.deleteUser).not.toHaveBeenCalled()
   })
 
   it('rejects deleting your own account regardless of input shape', async () => {
     const req = makeRequest(`http://test/api/auth/users?id=${baseUser.id}`, { method: 'DELETE' })
     const res = await DELETE(req as any)
     expect(res.status).toBe(400)
-    expect(deleteUserMock).not.toHaveBeenCalled()
+    expect(mocks.deleteUser).not.toHaveBeenCalled()
   })
 
   it('returns 400 when id is non-numeric (e.g. "abc")', async () => {
     const req = makeRequest('http://test/api/auth/users?id=abc', { method: 'DELETE' })
     const res = await DELETE(req as any)
     expect(res.status).toBe(400)
-    expect(deleteUserMock).not.toHaveBeenCalled()
+    expect(mocks.deleteUser).not.toHaveBeenCalled()
   })
 })
