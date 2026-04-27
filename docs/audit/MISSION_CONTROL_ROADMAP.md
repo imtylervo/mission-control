@@ -72,6 +72,7 @@ Goal: close the items already discovered during Phase 1/2 audit work.
 ### 1.1 Hydration nonce mismatch follow-up
 - Owner: Mai implementation, Đào review
 - Priority: medium
+- **Status: PR #15 applied Option A (`suppressHydrationWarning` + guard test) on `src/app/layout.tsx`. PR #17 adds the dashboard-route Chromium verification harness; PENDING dashboard auth (the `/tmp/mc-admin-pass.rotated` file used by PR #16 was rotated/cleaned). Once a credential is back in place, run the harness and either close ✅ or escalate to Option D (Next.js `16.1.6 → 16.2.4` bump).** See `docs/audit/PR17_PHASE_1_1_HYDRATION_VERIFICATION.md` and `docs/audit/scripts/pr17-mc-1-1-hydration-verification.js`.
 - Problem:
   - Next dev overlay reports SSR/client nonce mismatch: server renders `<script nonce="">`, client hydrates with populated nonce.
   - Touch points: `src/lib/csp.ts`, `src/proxy.ts`, `src/app/layout.tsx`.
