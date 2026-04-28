@@ -277,9 +277,25 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   const storedPub = localStorage.getItem(STORAGE_PUBKEY)
 
   // 1. IndexedDB has the key → fast path.
+  //
+  // Phase 2.1-followup PR-UI4: race the IDB read against a 2s timeout. Same
+  // Firefox / Camofox hang that affected the post-store readback in
+  // generateNewIdentity also hits this fast-path read on subsequent loads.
+  // When `store.load()` never resolves, the await here blocks
+  // sendConnectHandshake forever, the gateway times out the WS handshake
+  // window, and the dashboard cycles between code=1000 / code=1006 close
+  // events without ever reaching `connect.handshake`.
+  //
+  // Treating a 2s no-resolve as "no key in IDB" means the next branch
+  // regenerates a fresh keypair. The user pays a re-pair (one-time per
+  // session affected) but the dashboard actually connects, which is
+  // strictly better than an indefinite "Gateway disconnected" loop.
   let idbKey: CryptoKey | null = null
   try {
-    idbKey = await store.load()
+    idbKey = await Promise.race([
+      store.load(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+    ])
   } catch (err) {
     log.warn('IndexedDB read failed, falling through to migration / fresh keypair')
   }
@@ -289,6 +305,23 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
       publicKeyBase64: storedPub,
       privateKey: idbKey,
     }
+  }
+  if (
+    !idbKey &&
+    storedId &&
+    storedPub &&
+    !localStorage.getItem(STORAGE_PRIVKEY_LEGACY)
+  ) {
+    // localStorage advertises a paired identity but IDB read didn't return it
+    // in time. Drop the stale localStorage markers so the regenerate branch
+    // doesn't pick up a half-state (deviceId from old key + pubKey from old
+    // key, but no signing privateKey).
+    //
+    // Skip this cleanup when legacy `mc-device-privkey` is present — the
+    // migration branch below will use those markers to migrate the legacy
+    // PKCS8 key into IndexedDB.
+    localStorage.removeItem(STORAGE_DEVICE_ID)
+    localStorage.removeItem(STORAGE_PUBKEY)
   }
 
   // 2. Legacy localStorage key → migrate.
