@@ -26,6 +26,21 @@ export function getAdminPasswordHash(): string | null {
   }
 }
 
+// scrypt-hash format from src/lib/password.ts: `<salt-hex>:<hash-hex>` where
+// hash-hex is 64 chars (KEY_LENGTH=32 bytes). Anything missing either half or
+// not parsing as hex is treated as malformed — admin can't actually log in
+// against such a row, so the credential check must surface that explicitly
+// instead of reporting "strong" because nothing in the insecure list happens
+// to verify against it.
+function isMalformedHash(stored: string): boolean {
+  const [salt, hash] = stored.split(':')
+  if (!salt || !hash) return true
+  if (!/^[0-9a-f]+$/i.test(salt) || !/^[0-9a-f]+$/i.test(hash)) return true
+  // 32-byte scrypt key serialised as hex => 64 chars exactly
+  if (hash.length !== 64) return true
+  return false
+}
+
 function isInsecureHash(hash: string): boolean {
   for (const candidate of INSECURE_DEFAULTS) {
     try {
@@ -42,6 +57,13 @@ export function checkAdminCredential(
 ): AdminCredentialStatus {
   const dbHash = getAdminPasswordHash()
   if (dbHash) {
+    if (isMalformedHash(dbHash)) {
+      return {
+        source: 'db',
+        status: 'fail',
+        detail: 'Admin password hash in database is malformed (expected scrypt format `<salt-hex>:<32-byte-hash-hex>`). The admin cannot log in — reset the password to repair the row.',
+      }
+    }
     if (isInsecureHash(dbHash)) {
       return {
         source: 'db',

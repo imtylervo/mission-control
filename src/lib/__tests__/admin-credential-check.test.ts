@@ -106,13 +106,39 @@ describe('checkAdminCredential — PR #23 contract: SQLite is source of truth po
     expect(result.status).toBe('fail')
   })
 
-  it('survives a malformed hash without throwing', () => {
+  it('fails with explicit malformed-hash detail when the stored hash is not parseable', () => {
+    // Hash format is `<salt-hex>:<32-byte-hash-hex>`. A row with anything
+    // else means the admin cannot actually authenticate, so the check must
+    // not return "pass" just because nothing in INSECURE_DEFAULTS happens
+    // to verify against it.
     getAdminPasswordHashMock.mockReturnValue('not-a-valid-scrypt-hash')
 
     expect(() => checkAdminCredential({})).not.toThrow()
     const result = checkAdminCredential({})
     expect(result.source).toBe('db')
-    // A malformed hash never matches any insecure default, so it passes.
-    expect(result.status).toBe('pass')
+    expect(result.status).toBe('fail')
+    expect(result.detail).toMatch(/malformed/i)
+  })
+
+  it('fails when the stored hash has the right shape but non-hex characters', () => {
+    // 32-char salt-like + 64-char hash-like, but the hash half has non-hex chars.
+    getAdminPasswordHashMock.mockReturnValue(
+      'a'.repeat(32) + ':' + 'z'.repeat(64),
+    )
+
+    const result = checkAdminCredential({})
+    expect(result.status).toBe('fail')
+    expect(result.detail).toMatch(/malformed/i)
+  })
+
+  it('fails when the stored hash has the right shape but wrong key length', () => {
+    // 32-char hex salt, 32-char (not 64) hex hash.
+    getAdminPasswordHashMock.mockReturnValue(
+      'a'.repeat(32) + ':' + 'b'.repeat(32),
+    )
+
+    const result = checkAdminCredential({})
+    expect(result.status).toBe('fail')
+    expect(result.detail).toMatch(/malformed/i)
   })
 })
