@@ -57,12 +57,58 @@ Does not record:
 
 ## Pending items for the close-out commit
 
-These are deliberately not done in this PR — they require either credential restoration or a maintainer decision:
+- [x] Run the harness once credentials are available. **Done 2026-04-28 09:55 AEST** with rotated admin credential at `/tmp/mc-admin-pass.rotated` (chmod 600, reset by Đào).
+- [x] Append the evidence JSON to this doc under a new "Result" section. **See "Result" below.**
+- [x] If `verdict === NO_HYDRATION_WARNING`: edit `docs/audit/MISSION_CONTROL_ROADMAP.md` row 1.1. **Done.**
+- [x] If `verdict === WARNING_RECURS`: open Option D path. **Not triggered — verdict was NO_HYDRATION_WARNING.**
 
-- [ ] Run the harness once credentials are available.
-- [ ] Append the evidence JSON to this doc under a new "Result" section.
-- [ ] If `verdict === NO_HYDRATION_WARNING`: edit `docs/audit/MISSION_CONTROL_ROADMAP.md` row 1.1 to `✅ complete via PR #15 + verified via PR #17`, and the "Immediate next task" list to strike-through Phase 1.1.
-- [ ] If `verdict === WARNING_RECURS`: open a sibling issue/PR for the Option D path or the documented-dev-only-limitation path, per Đào's call.
+## Result (close-out evidence — 2026-04-28)
+
+Harness run on the rotated-admin credential, against the live dev server at `http://127.0.0.1:3000`, after `pnpm dev` warmed up. Run command:
+
+```
+MC_ADMIN_PASS_FILE=/tmp/mc-admin-pass.rotated \
+MC_ORIGIN=http://127.0.0.1:3000 \
+node docs/audit/scripts/pr17-mc-1-1-hydration-verification.js
+```
+
+Evidence JSON (verbatim stdout):
+
+```json
+{
+  "origin": "http://127.0.0.1:3000",
+  "auth_mode": "file",
+  "engine": "chromium-headless",
+  "total_console_events": 4,
+  "hydration_event_count": 0,
+  "hydration_event_samples": [],
+  "csp_meta_present": false,
+  "script_tags_with_nonce": 85,
+  "script_nonces_sample": [
+    { "tag": "script", "nonceLen": 0, "hasContent": false },
+    { "tag": "script", "nonceLen": 0, "hasContent": false },
+    { "tag": "script", "nonceLen": 0, "hasContent": false },
+    { "tag": "script", "nonceLen": 0, "hasContent": false },
+    { "tag": "script", "nonceLen": 0, "hasContent": false },
+    { "tag": "script", "nonceLen": 0, "hasContent": false }
+  ],
+  "verdict": "NO_HYDRATION_WARNING"
+}
+```
+
+### Findings
+
+- **`hydration_event_count: 0`** on the dashboard `/` route. The four `total_console_events` are unrelated logs (none with the React hydration-mismatch substring). Verdict is **`NO_HYDRATION_WARNING`** → Phase 1.1 closes.
+- `csp_meta_present: false` — Mission Control's layout does NOT insert a meta CSP tag; CSP is delivered via response HTTP header instead. The meta path simply isn't used here. Not a defect.
+- `script_tags_with_nonce: 85` — Next.js attaches the nonce attribute to 85 inline scripts on the dashboard. Sampled `nonceLen: 0` reflects Next.js's dev-server build path (dev mode does not populate inline-script nonces; production build does). For the Phase 1.1 invariant the relevant signal is "no hydration banner on dashboard," which holds.
+
+### Harness change required to make this run
+
+The harness's original `page.goto(url, { waitUntil: 'networkidle' })` strategy timed out after 30 s because Mission Control's `/api/events` endpoint is an SSE long-poll that never enters the idle state. Added a `context.route('**/api/events**', route => route.abort())` blocker before navigation — the hydration check only needs the initial HTML + JS bundles, not the live event stream. The rest of the harness logic is unchanged.
+
+### Conclusion
+
+Phase 1.1 is **fully closed**: PR #15 applied the source-side `suppressHydrationWarning` fix and PR #17 verified the dashboard route does not emit a hydration warning at runtime. Roadmap row 1.1 and BASELINE updated.
 
 ## Risk and rollback
 

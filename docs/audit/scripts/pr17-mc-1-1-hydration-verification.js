@@ -134,6 +134,12 @@ async function main() {
   if (creds.mode === 'storage_state') contextOptions.storageState = creds.path
   const context = await browser.newContext(contextOptions)
 
+  // Mission Control's /api/events is an SSE long-poll that NEVER closes.
+  // page.goto with waitUntil:'networkidle' would time out waiting for it.
+  // Block the SSE route at the context level — hydration check only needs
+  // the initial HTML + JS bundles, not the live event stream.
+  await context.route('**/api/events**', (route) => route.abort())
+
   await installHydrationWrapper(context)
 
   const page = await context.newPage()

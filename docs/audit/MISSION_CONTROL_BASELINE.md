@@ -827,7 +827,7 @@ Caveat: live UI dispatch via the Tasks page was not exercised because the Camofo
 
 *Separate findings (out of scope for #574 / #608, candidate follow-up tickets):*
 
-- *Next.js hydration nonce mismatch* (Next 16.1.6 Turbopack, "stale" marker). SSR renders `<script nonce="">` while client hydrates with a populated nonce, e.g. `<script nonce="pwMoLOKtKMblm7P4+Z1rRw==">`. Touch points: `src/lib/csp.ts` (CSP builder), `src/proxy.ts` (middleware nonce generation), `src/app/layout.tsx:91-101` (header read + `<Script nonce={nonce}>`). Surfaces as a single dev-overlay console error; does not block app load or login.
+- *Next.js hydration nonce mismatch* (Next 16.1.6 Turbopack, "stale" marker). SSR renders `<script nonce="">` while client hydrates with a populated nonce, e.g. `<script nonce="pwMoLOKtKMblm7P4+Z1rRw==">`. Touch points: `src/lib/csp.ts` (CSP builder), `src/proxy.ts` (middleware nonce generation), `src/app/layout.tsx:91-101` (header read + `<Script nonce={nonce}>`). **RESOLVED** 2026-04-28 via PR #15 (Option A `suppressHydrationWarning` on the inline bootstrap script) + PR #17 dashboard verification harness verdict `NO_HYDRATION_WARNING` on `/`. See `docs/audit/PR17_PHASE_1_1_HYDRATION_VERIFICATION.md` Result section.
 - *`src/app/api/notifications/deliver/route.ts:82` still uses legacy CLI shell-out* (`runOpenClaw(['gateway', 'call', 'agent', '--params', '--json'])`) for notification delivery. Per Đào's narrow-scope caveat (msg 1078), this path is intentionally NOT covered by #608, but it carries the same `spawn openclaw ENOENT` failure mode in containerized deployments and is a reasonable follow-up "notifications-delivery WS migration" candidate.
 
 **Operational findings (NOT defects):**
