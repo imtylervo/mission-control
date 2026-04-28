@@ -72,6 +72,7 @@ Goal: close the items already discovered during Phase 1/2 audit work.
 ### 1.1 Hydration nonce mismatch follow-up
 - Owner: Mai implementation, Đào review
 - Priority: medium
+- **Status: ✅ complete via PR #15 + verified via PR #17 (2026-04-28).** PR #15 applied Option A (`suppressHydrationWarning` + guard test) on `src/app/layout.tsx`. PR #17 ran the dashboard-route Chromium harness against the live dev server with a rotated admin credential and produced verdict `NO_HYDRATION_WARNING` (`hydration_event_count: 0` on `/`). See evidence JSON in `docs/audit/PR17_PHASE_1_1_HYDRATION_VERIFICATION.md` "Result" section.
 - Problem:
   - Next dev overlay reports SSR/client nonce mismatch: server renders `<script nonce="">`, client hydrates with populated nonce.
   - Touch points: `src/lib/csp.ts`, `src/proxy.ts`, `src/app/layout.tsx`.
@@ -339,9 +340,9 @@ Goal: make this maintainable and potentially upstreamable.
 
 ## Immediate next task recommendation
 
-Phase 1.2, 1.3, and 1.4 (substantially) are now complete — see the Status lines on each section. The remaining Phase 1 candidates, in suggested order:
+Phase 1.x is fully complete; Phase 2 → Phase 6 are also closed (see `docs/audit/PHASE_AUDIT_SUMMARY.md`). The original Phase 1 status lines are left below as historical context — every entry is now done.
 
-1. **Phase 1.1 — Hydration nonce mismatch follow-up.** PR #15 applied Option A (`suppressHydrationWarning`). PR #17 is a draft harness that runs the dashboard-route verification; it is **PENDING dashboard auth** because the rotated admin password file is not on the box. Once a credential is restored, run the harness and either close the row ✅ or escalate to Option D (Next.js bump).
+1. ~~**Phase 1.1 — Hydration nonce mismatch follow-up.**~~ **Done via PR #15 + PR #17.** PR #15 applied Option A (`suppressHydrationWarning`). PR #17 ran the dashboard-route Chromium harness on 2026-04-28 with a rotated admin credential and produced verdict `NO_HYDRATION_WARNING` (`hydration_event_count: 0` on `/`). Phase 1.1 fully closed.
 2. ~~**Phase 1.5 — #574 legacy migration verification.**~~ **Done via PR #16.** Migration verified end-to-end on Chromium (with the real fixture format from pre-#574 commit `1411296`). The Camoufox partial-failure observed in PR #5 sub-task 5a is reclassified as a Firefox-side CryptoKey-IDB roundtrip quirk, not an MC bug. Code path unchanged.
 3. ~~**Phase 1.6 — `mc-device-token` classification.**~~ **Done via PR #18.** Classified **bearer-equivalent** based on local OpenClaw `2026.4.24` gateway source: `verifyDeviceToken` runs as a fallback auth path that grants `authMethod="device-token"` without requiring a fresh `device.signature`.
 4. ~~**Phase 1.7 — `mc-device-token` storage migration.**~~ **Done via PR #19.** Token moved from `localStorage` to `sessionStorage` (option (b) per Đào design call). Persistent-XSS / cross-tab / disk-dump exfil paths closed; same-tab same-origin JS read remains as residual (mitigated by future option (c) `httpOnly` BFF cookie if needed).
