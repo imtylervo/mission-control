@@ -279,6 +279,14 @@ export function useWebSocket() {
           // stable failure they can resolve via clearDeviceIdentity + re-pair,
           // rather than an indefinite reconnect loop racing the gateway.
           nonRetryableErrorRef.current = err.message
+          // Surface the failure to UI state so PR-UI5's device-identity
+          // recovery banner (src/components/dashboard/device-identity-recovery-banner.tsx)
+          // can render the "Reset device identity & re-pair" action. The marker
+          // string `device-identity-unavailable` is what the banner matches.
+          setConnection({
+            isConnected: false,
+            nonRetryableError: `device-identity-unavailable: ${err.message}`,
+          })
           try {
             ws.close(4001, 'device-identity-unavailable')
           } catch {
@@ -420,7 +428,11 @@ export function useWebSocket() {
       setConnection({
         isConnected: true,
         lastConnected: new Date(),
-        reconnectAttempts: 0
+        reconnectAttempts: 0,
+        // PR-UI5: clear the device-identity recovery banner once a real
+        // handshake completes (we got past the post-PR-UI4 stable-failure
+        // state).
+        nonRetryableError: null,
       })
       // Start heartbeat after successful handshake
       startHeartbeat()
@@ -726,6 +738,9 @@ export function useWebSocket() {
     manualDisconnectRef.current = false
     nonRetryableErrorRef.current = null
     lastSeqRef.current = null
+    // PR-UI5: clear the surface marker on every fresh connect attempt so the
+    // device-identity recovery banner stops showing once the user retries.
+    setConnection({ nonRetryableError: null })
 
     try {
       const ws = new WebSocket(normalizedUrl)

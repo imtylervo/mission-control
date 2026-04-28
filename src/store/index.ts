@@ -350,6 +350,20 @@ export interface ConnectionStatus {
   reconnectAttempts: number
   latency?: number
   sseConnected?: boolean
+  /**
+   * When the WS layer hits a non-retryable failure (per
+   * `src/lib/websocket-utils#NON_RETRYABLE_ERROR_CODES`) it sets this so the
+   * UI can stop showing "Reconnecting..." and surface a specific recovery
+   * action instead. Currently used by PR-UI5's device-identity recovery
+   * banner: when this includes the post-PR-UI4 marker
+   * `device-identity-unavailable`, the banner offers to clear the local
+   * device identity and reload, breaking out of the
+   * `nonRetryableErrorRef` short-circuit.
+   *
+   * Cleared on successful connect (handshake complete) and on every fresh
+   * `connect()` attempt.
+   */
+  nonRetryableError: string | null
 }
 
 export interface ExecApprovalRequest {
@@ -671,7 +685,8 @@ export const useMissionControl = create<MissionControlStore>()(
     connection: {
       isConnected: false,
       url: '',
-      reconnectAttempts: 0
+      reconnectAttempts: 0,
+      nonRetryableError: null,
     },
     lastMessage: null,
     setConnection: (connection) =>
