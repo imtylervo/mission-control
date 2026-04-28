@@ -305,6 +305,108 @@ describe('device-identity (PR #574 hardening)', () => {
     )
   })
 
+  describe('in-memory identity cache (PR-UI6)', () => {
+    /**
+     * The slow-poll auto-reconnect loop after PAIRING_REQUIRED re-enters
+     * `getOrCreateDeviceIdentity` once per ~10s. Without an in-memory
+     * cache, every retry re-reads IDB — and on Firefox/Camofox that
+     * `objectStore.get()` hangs unpredictably, which trips the
+     * `DeviceIdentityUnavailableError` short-circuit and prevents the
+     * connection from ever recovering after the operator approves.
+     *
+     * This block pins: once an identity has been produced in this page-
+     * load, subsequent calls return it from memory without touching IDB.
+     */
+    it('returns the cached identity on repeat calls without re-reading IndexedDB', async () => {
+      const first = await getOrCreateDeviceIdentity()
+
+      let loadAttempts = 0
+      const watchedStore: DeviceIdentityStore = {
+        ...store,
+        load: async () => {
+          loadAttempts += 1
+          return store.load()
+        },
+      }
+      __setDeviceIdentityStoreForTests(watchedStore)
+      // Re-seed the cache via the public function — the override above
+      // also resets the in-memory cache (test seam), so we restore the
+      // populated cache by performing one regular call against the
+      // watched store, which DOES read IDB and then populates the cache.
+      const second = await getOrCreateDeviceIdentity()
+      expect(loadAttempts).toBe(1)
+      expect(second.deviceId).toBe(first.deviceId)
+      expect(second.publicKeyBase64).toBe(first.publicKeyBase64)
+
+      // Now the cache is hot — a third call must NOT increment
+      // loadAttempts.
+      const third = await getOrCreateDeviceIdentity()
+      expect(loadAttempts).toBe(1)
+      expect(third).toBe(second)
+    })
+
+    it('survives an IDB readback that would otherwise hang (the post-approval path)', async () => {
+      // First call seeds the cache via the normal precedence-3 fresh-
+      // keypair path.
+      const first = await getOrCreateDeviceIdentity()
+
+      // Simulate the Firefox/Camofox IDB hang: every subsequent
+      // `store.load()` returns a Promise that never resolves. With no
+      // cache, getOrCreateDeviceIdentity would race the 2s timeout, see
+      // localStorage but no idbKey, and throw
+      // DeviceIdentityUnavailableError. With the cache, it returns the
+      // cached identity immediately.
+      const hangingStore: DeviceIdentityStore = {
+        ...store,
+        load: () => new Promise<CryptoKey | null>(() => {}),
+      }
+      __setDeviceIdentityStoreForTests(hangingStore)
+      // Replay the cache by issuing one regular call before the seam
+      // override drops it… but the seam override resets the cache. So we
+      // verify the steady-state behavior by issuing a call against the
+      // hanging store after we re-prime via a non-hanging store.
+      __setDeviceIdentityStoreForTests(store)
+      const primed = await getOrCreateDeviceIdentity()
+      expect(primed.deviceId).toBe(first.deviceId)
+
+      // Now swap to the hanging store, but DO NOT use the test seam
+      // (which would reset the cache). Instead, monkey-patch the
+      // existing override directly. Easier path: confirm that even with
+      // the hanging store, the cached identity still serves the next
+      // call because nothing about it requires `load()`.
+      // We simulate this by asserting that swapping in the hanging
+      // store and immediately calling getOrCreateDeviceIdentity does
+      // NOT throw within a reasonable window (here, well below the
+      // 2000ms internal timeout).
+      // To avoid the seam reset, we patch `store.load` in place rather
+      // than calling the seam.
+      const originalLoad = store.load.bind(store)
+      try {
+        store.load = () => new Promise<CryptoKey | null>(() => {})
+        const fast = await Promise.race([
+          getOrCreateDeviceIdentity(),
+          new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 200)),
+        ])
+        expect(fast).not.toBe('timeout')
+        expect((fast as Awaited<ReturnType<typeof getOrCreateDeviceIdentity>>).deviceId).toBe(
+          first.deviceId,
+        )
+      } finally {
+        store.load = originalLoad
+      }
+    })
+
+    it('clearDeviceIdentity invalidates the in-memory cache', async () => {
+      const first = await getOrCreateDeviceIdentity()
+      await clearDeviceIdentity()
+      // After clear, localStorage is empty AND the in-memory cache
+      // dropped, so the next call must produce a fresh identity (with
+      // different deviceId).
+      const second = await getOrCreateDeviceIdentity()
+      expect(second.deviceId).not.toBe(first.deviceId)
+    })
+  })
+
   describe('clearDeviceIdentity', () => {
     it('clears localStorage AND the IndexedDB-backed key', async () => {
       const id = await getOrCreateDeviceIdentity()

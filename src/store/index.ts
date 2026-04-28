@@ -3,6 +3,7 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { MODEL_CATALOG } from '@/lib/models'
+import type { PendingApprovalState } from '@/lib/websocket-utils'
 
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue | undefined }
@@ -364,6 +365,24 @@ export interface ConnectionStatus {
    * `connect()` attempt.
    */
   nonRetryableError: string | null
+  /**
+   * Pending operator approval (PR-UI6). Set when the gateway returns
+   * `error.details.code = PAIRING_REQUIRED` during the connect handshake —
+   * i.e., a fresh deviceId arrived (post Reset device identity) and the
+   * gateway operator hasn't approved this device yet.
+   *
+   * This is a SOFT failure mode separate from `nonRetryableError`: the WS
+   * layer keeps polling on a slow ~10s cadence (see
+   * `src/lib/websocket-utils#calculatePairingPollDelay`), so when the
+   * operator runs `openclaw devices approve <requestId>` on the gateway
+   * host, the next poll attempt's handshake succeeds and this field is
+   * cleared automatically — no manual user click required.
+   *
+   * The shape mirrors the gateway's pairing detail payload (deviceId +
+   * requestId so the operator can identify *which* device they're
+   * approving). See `readPairingApproval` for the parser.
+   */
+  pendingApproval: PendingApprovalState | null
 }
 
 export interface ExecApprovalRequest {
@@ -687,6 +706,7 @@ export const useMissionControl = create<MissionControlStore>()(
       url: '',
       reconnectAttempts: 0,
       nonRetryableError: null,
+      pendingApproval: null,
     },
     lastMessage: null,
     setConnection: (connection) =>

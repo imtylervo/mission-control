@@ -11,6 +11,21 @@ export const ConnectErrorDetailCodes = {
   AUTH_TOKEN_MISMATCH: 'AUTH_TOKEN_MISMATCH',
   ORIGIN_NOT_ALLOWED: 'ORIGIN_NOT_ALLOWED',
   DEVICE_SIGNATURE_INVALID: 'DEVICE_SIGNATURE_INVALID',
+  /**
+   * Gateway flag for "device must be approved by an operator before this
+   * connection is allowed". Sent by openclaw 2026.x via the connect res frame
+   * (see openclaw `connect-error-details.ts` + `server.impl` which closes 1008
+   * after responding). The accompanying `error.details` payload follows the
+   * shape pinned by `readPairingApproval` below — reason ∈ {not-paired,
+   * role-upgrade, scope-upgrade, metadata-upgrade} plus deviceId/requestId so
+   * the UI can show *which* device the operator needs to approve.
+   *
+   * Important: this is NOT non-retryable. Approval lands at human-time and
+   * the WS layer must keep polling on a slow cadence so the connection
+   * recovers automatically once the operator approves, without a manual user
+   * click. See `calculatePairingPollDelay`.
+   */
+  PAIRING_REQUIRED: 'PAIRING_REQUIRED',
 } as const
 
 /** Error detail shape from gateway frames. */
@@ -79,6 +94,102 @@ export function shouldRetryWithoutDeviceIdentity(
  */
 export function calculateBackoff(attempt: number): number {
   return Math.min(1000 * Math.pow(1.7, attempt), 15000)
+}
+
+/** Reasons the gateway returns alongside PAIRING_REQUIRED — see openclaw
+ *  `ConnectPairingRequiredReasons`. Ordered to match the gateway constant. */
+export type PairingApprovalReason =
+  | 'not-paired'
+  | 'role-upgrade'
+  | 'scope-upgrade'
+  | 'metadata-upgrade'
+
+const PAIRING_APPROVAL_REASONS = new Set<PairingApprovalReason>([
+  'not-paired',
+  'role-upgrade',
+  'scope-upgrade',
+  'metadata-upgrade',
+])
+
+/**
+ * Pending-approval state surfaced to the UI when the gateway responds with
+ * PAIRING_REQUIRED. Captures the `error.details` payload from the openclaw
+ * connect-error-details contract, normalized so `null`/`[]` mean "field was
+ * absent or malformed" — never `undefined` — to make the UI rendering
+ * (banner) trivially total.
+ */
+export interface PendingApprovalState {
+  reason: PairingApprovalReason | null
+  requestId: string | null
+  deviceId: string | null
+  requestedRole: string | null
+  requestedScopes: string[]
+  approvedRoles: string[]
+  approvedScopes: string[]
+}
+
+/**
+ * Decode the gateway's `error.details` payload into a `PendingApprovalState`,
+ * or return `null` if the error is NOT a PAIRING_REQUIRED error.
+ *
+ * Pinned to openclaw 2026.x `buildPairingConnectErrorDetails`. The gateway
+ * accepts/produces details in two equivalent shapes:
+ *   1. `{ details: { code: 'PAIRING_REQUIRED', reason, requestId, deviceId, ... } }`
+ *   2. `{ code: 'PAIRING_REQUIRED', reason, requestId, deviceId, ... }`
+ * `readErrorDetailCode` already prefers (1), so we read from `details`
+ * first then fall back to the top-level for older / less-structured frames.
+ */
+export function readPairingApproval(
+  error: GatewayErrorDetail | null | undefined,
+): PendingApprovalState | null {
+  if (!error || typeof error !== 'object') return null
+  if (readErrorDetailCode(error) !== ConnectErrorDetailCodes.PAIRING_REQUIRED) return null
+
+  const detailsObj =
+    error.details && typeof error.details === 'object' && !Array.isArray(error.details)
+      ? error.details
+      : (error as Record<string, unknown>)
+
+  const stringOrNull = (v: unknown): string | null =>
+    typeof v === 'string' && v.length > 0 ? v : null
+
+  const stringArray = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : []
+
+  const rawReason = stringOrNull(detailsObj.reason)
+  const reason =
+    rawReason && PAIRING_APPROVAL_REASONS.has(rawReason as PairingApprovalReason)
+      ? (rawReason as PairingApprovalReason)
+      : null
+
+  return {
+    reason,
+    requestId: stringOrNull(detailsObj.requestId),
+    deviceId: stringOrNull(detailsObj.deviceId),
+    requestedRole: stringOrNull(detailsObj.requestedRole),
+    requestedScopes: stringArray(detailsObj.requestedScopes),
+    approvedRoles: stringArray(detailsObj.approvedRoles),
+    approvedScopes: stringArray(detailsObj.approvedScopes),
+  }
+}
+
+/** Slow-poll cadence used while pending operator approval. Steady, not
+ *  exponential — operator approval lands at human-time, and exponential
+ *  backoff just means the user waits longer for no reason after approval. */
+export const PAIRING_POLL_BASE_MS = 10_000
+const PAIRING_POLL_JITTER_MS = 2_000
+
+/**
+ * Compute the next slow-poll delay while the gateway is in PAIRING_REQUIRED
+ * state. `rng` is injectable so tests can pin the value; default is
+ * `Math.random`. Multiple tabs adding ±2s jitter avoids a synchronized
+ * herd hitting the gateway at the same instant.
+ */
+export function calculatePairingPollDelay(rng: () => number = Math.random): number {
+  const jitter = Math.round(rng() * PAIRING_POLL_JITTER_MS)
+  return PAIRING_POLL_BASE_MS + jitter
 }
 
 /**

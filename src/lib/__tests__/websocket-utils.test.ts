@@ -7,6 +7,9 @@ import {
   detectSequenceGap,
   NON_RETRYABLE_ERROR_CODES,
   shouldRetryWithoutDeviceIdentity,
+  readPairingApproval,
+  calculatePairingPollDelay,
+  PAIRING_POLL_BASE_MS,
 } from '../websocket-utils'
 
 describe('readErrorDetailCode', () => {
@@ -202,6 +205,7 @@ describe('ConnectErrorDetailCodes', () => {
       'AUTH_TOKEN_MISMATCH',
       'ORIGIN_NOT_ALLOWED',
       'DEVICE_SIGNATURE_INVALID',
+      'PAIRING_REQUIRED',
     ]
     for (const key of expectedKeys) {
       expect(ConnectErrorDetailCodes).toHaveProperty(key)
@@ -211,5 +215,164 @@ describe('ConnectErrorDetailCodes', () => {
 
   it('NON_RETRYABLE_ERROR_CODES does not include AUTH_TOKEN_MISMATCH', () => {
     expect(NON_RETRYABLE_ERROR_CODES.has('AUTH_TOKEN_MISMATCH')).toBe(false)
+  })
+
+  // Critical for PR-UI6: PAIRING_REQUIRED must NOT be classified as
+  // non-retryable, otherwise the slow-poll loop never gets to fire and the
+  // user is stuck on a dead banner waiting for the operator approval that
+  // would have unblocked them.
+  it('NON_RETRYABLE_ERROR_CODES does not include PAIRING_REQUIRED', () => {
+    expect(NON_RETRYABLE_ERROR_CODES.has('PAIRING_REQUIRED')).toBe(false)
+  })
+})
+
+describe('readPairingApproval — PR-UI6 PAIRING_REQUIRED parser', () => {
+  it('returns null for null/undefined input', () => {
+    expect(readPairingApproval(null)).toBeNull()
+    expect(readPairingApproval(undefined)).toBeNull()
+  })
+
+  it('returns null when the code is not PAIRING_REQUIRED', () => {
+    expect(
+      readPairingApproval({
+        message: 'origin not allowed',
+        details: { code: 'ORIGIN_NOT_ALLOWED' },
+      }),
+    ).toBeNull()
+  })
+
+  it('returns null when there is no code at all', () => {
+    expect(
+      readPairingApproval({ message: 'some random failure', details: {} }),
+    ).toBeNull()
+  })
+
+  it('parses the canonical openclaw shape (code + reason + ids in details)', () => {
+    const result = readPairingApproval({
+      message: 'pairing required: device is not approved yet',
+      details: {
+        code: 'PAIRING_REQUIRED',
+        reason: 'not-paired',
+        requestId: 'req_abc123',
+        deviceId: 'dev_browser_xyz',
+        requestedRole: 'operator',
+        requestedScopes: ['operator.admin'],
+        approvedRoles: [],
+        approvedScopes: [],
+      },
+    })
+    expect(result).toEqual({
+      reason: 'not-paired',
+      requestId: 'req_abc123',
+      deviceId: 'dev_browser_xyz',
+      requestedRole: 'operator',
+      requestedScopes: ['operator.admin'],
+      approvedRoles: [],
+      approvedScopes: [],
+    })
+  })
+
+  it('handles each pairing reason variant correctly', () => {
+    for (const reason of [
+      'not-paired',
+      'role-upgrade',
+      'scope-upgrade',
+      'metadata-upgrade',
+    ] as const) {
+      const result = readPairingApproval({
+        details: { code: 'PAIRING_REQUIRED', reason },
+      })
+      expect(result?.reason).toBe(reason)
+    }
+  })
+
+  it('coerces an unknown/garbage reason to null without dropping the whole record', () => {
+    const result = readPairingApproval({
+      details: {
+        code: 'PAIRING_REQUIRED',
+        reason: 'totally-bogus-reason',
+        requestId: 'req_456',
+      },
+    })
+    // Still pairing-required (so the slow-poll still kicks in), but the
+    // banner copy falls back to the generic "pairing" template via reason=null.
+    expect(result).not.toBeNull()
+    expect(result?.reason).toBeNull()
+    expect(result?.requestId).toBe('req_456')
+  })
+
+  it('drops empty-string ids (UI must not render empty deviceId / requestId)', () => {
+    const result = readPairingApproval({
+      details: {
+        code: 'PAIRING_REQUIRED',
+        reason: 'not-paired',
+        requestId: '',
+        deviceId: '',
+      },
+    })
+    expect(result?.requestId).toBeNull()
+    expect(result?.deviceId).toBeNull()
+  })
+
+  it('coerces a missing requestedScopes to empty array (renders cleanly in UI)', () => {
+    const result = readPairingApproval({
+      details: {
+        code: 'PAIRING_REQUIRED',
+        reason: 'not-paired',
+        requestId: 'req_1',
+      },
+    })
+    expect(result?.requestedScopes).toEqual([])
+    expect(result?.approvedRoles).toEqual([])
+    expect(result?.approvedScopes).toEqual([])
+  })
+
+  it('filters non-string entries out of scope arrays', () => {
+    const result = readPairingApproval({
+      details: {
+        code: 'PAIRING_REQUIRED',
+        requestedScopes: ['operator.admin', 42, null, '', 'extra.scope'],
+      } as any,
+    })
+    expect(result?.requestedScopes).toEqual(['operator.admin', 'extra.scope'])
+  })
+
+  it('falls back to top-level fields when details is absent (looser legacy shape)', () => {
+    // Some less-structured frames carry the code + fields directly at the
+    // top level rather than nested under .details. The parser tolerates
+    // both for forward compatibility.
+    const result = readPairingApproval({
+      code: 'PAIRING_REQUIRED',
+      reason: 'role-upgrade',
+      requestId: 'req_legacy',
+      deviceId: 'dev_legacy',
+    } as any)
+    expect(result?.reason).toBe('role-upgrade')
+    expect(result?.requestId).toBe('req_legacy')
+    expect(result?.deviceId).toBe('dev_legacy')
+  })
+})
+
+describe('calculatePairingPollDelay — PR-UI6 slow-poll cadence', () => {
+  it('returns base delay with no jitter when rng=0', () => {
+    expect(calculatePairingPollDelay(() => 0)).toBe(PAIRING_POLL_BASE_MS)
+  })
+
+  it('returns base + 2000ms when rng=1 (full jitter)', () => {
+    expect(calculatePairingPollDelay(() => 1)).toBe(PAIRING_POLL_BASE_MS + 2000)
+  })
+
+  it('returns a value within the documented range using the default rng', () => {
+    const v = calculatePairingPollDelay()
+    expect(v).toBeGreaterThanOrEqual(PAIRING_POLL_BASE_MS)
+    expect(v).toBeLessThanOrEqual(PAIRING_POLL_BASE_MS + 2000)
+  })
+
+  it('keeps the base at exactly 10s — explicitly NOT exponential', () => {
+    // Pin the base value: this is a UX contract, not just an implementation
+    // detail. If the base drifts (e.g., someone later adds exponential
+    // growth or shortens it to 1s), the operator-approval flow either
+    // strands the user or storms the gateway.
+    expect(PAIRING_POLL_BASE_MS).toBe(10_000)
   })
 })

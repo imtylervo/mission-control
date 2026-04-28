@@ -89,11 +89,41 @@ export function __setDeviceIdentityStoreForTests(
   store: DeviceIdentityStore | null
 ): void {
   storeOverride = store
+  // Drop the in-memory cache (PR-UI6) too so each test sees a clean
+  // device-identity module — otherwise a fresh store override could be
+  // shadowed by a cached identity from a prior test.
+  inMemoryIdentity = null
 }
 
 function getStore(): DeviceIdentityStore {
   if (storeOverride) return storeOverride
   return createIndexedDbDeviceIdentityStore()
+}
+
+// ── In-memory identity cache (PR-UI6) ────────────────────────────
+//
+// The CryptoKey returned by `getOrCreateDeviceIdentity` is non-extractable
+// and only valid within the current page-load. Caching it at module scope
+// means subsequent calls in the same session — e.g. the slow-poll
+// reconnect cycle after PAIRING_REQUIRED — return immediately without
+// touching IndexedDB.
+//
+// This is critical for the auto-reconnect-after-approval flow: without the
+// cache, every reconnect attempt re-enters the IDB readback path that
+// hangs on Firefox/Camofox, which trips the
+// `DeviceIdentityUnavailableError` short-circuit and strands the user in
+// the recovery-banner state even though the gateway has already approved.
+//
+// Cache invalidation: cleared on `clearDeviceIdentity()` (manual reset),
+// and implicitly invalidated when localStorage's deviceId/publicKey no
+// longer match (defensive — should not happen in practice since both are
+// rewritten in lockstep).
+
+let inMemoryIdentity: DeviceIdentity | null = null
+
+/** @internal — test-only seam, lets tests prove the cache is consulted. */
+export function __resetDeviceIdentityCacheForTests(): void {
+  inMemoryIdentity = null
 }
 
 // ── Verification helpers ─────────────────────────────────────────
@@ -276,6 +306,20 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   const storedId = localStorage.getItem(STORAGE_DEVICE_ID)
   const storedPub = localStorage.getItem(STORAGE_PUBKEY)
 
+  // PR-UI6: in-memory cache fast-path. If we have already produced a
+  // DeviceIdentity in this page-load AND its deviceId/publicKey still
+  // match what's in localStorage, return it without re-reading
+  // IndexedDB. This is what makes the slow-poll auto-reconnect-
+  // after-approval flow actually reach a successful handshake on the
+  // Firefox/Camofox profile where IDB readback hangs unpredictably.
+  if (
+    inMemoryIdentity &&
+    inMemoryIdentity.deviceId === storedId &&
+    inMemoryIdentity.publicKeyBase64 === storedPub
+  ) {
+    return inMemoryIdentity
+  }
+
   // 1. IndexedDB has the key → fast path.
   //
   // Phase 2.1-followup PR-UI4: race the IDB read against a 2s timeout. Same
@@ -300,11 +344,13 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
     log.warn('IndexedDB read failed, falling through to migration / fresh keypair')
   }
   if (idbKey && storedId && storedPub) {
-    return {
+    const identity = {
       deviceId: storedId,
       publicKeyBase64: storedPub,
       privateKey: idbKey,
     }
+    inMemoryIdentity = identity
+    return identity
   }
   if (
     !idbKey &&
@@ -335,11 +381,16 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   // 2. Legacy localStorage key → migrate.
   if (localStorage.getItem(STORAGE_PRIVKEY_LEGACY)) {
     const migrated = await migrateLegacyIfPresent(store)
-    if (migrated) return migrated
+    if (migrated) {
+      inMemoryIdentity = migrated
+      return migrated
+    }
   }
 
   // 3. New device.
-  return generateNewIdentity(store)
+  const fresh = await generateNewIdentity(store)
+  inMemoryIdentity = fresh
+  return fresh
 }
 
 /**
@@ -432,6 +483,11 @@ export function cacheDeviceToken(token: string): void {
  * Best-effort across all branches.
  */
 export async function clearDeviceIdentity(): Promise<void> {
+  // PR-UI6: explicit reset must drop the in-memory cache too — otherwise the
+  // next call to getOrCreateDeviceIdentity in the same page-load would
+  // return the stale identity and silently bypass the user's reset.
+  inMemoryIdentity = null
+
   const { local, session } = _safeStorage()
   if (local) {
     try { local.removeItem(STORAGE_DEVICE_ID) } catch {}
