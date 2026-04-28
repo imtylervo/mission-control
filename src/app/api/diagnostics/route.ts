@@ -2,19 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import net from 'node:net'
 import { existsSync, statSync } from 'node:fs'
 import { requireRole } from '@/lib/auth'
+import { checkAdminCredential } from '@/lib/admin-credential-check'
 import { config } from '@/lib/config'
 import { getDatabase } from '@/lib/db'
 import { runOpenClaw } from '@/lib/command'
 import { logger } from '@/lib/logger'
 import { APP_VERSION } from '@/lib/version'
-
-const INSECURE_PASSWORDS = new Set([
-  'admin',
-  'password',
-  'change-me-on-first-login',
-  'changeme',
-  'testpass123',
-])
 
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'admin')
@@ -74,11 +67,11 @@ function getSecurityInfo() {
     detail: !apiKey ? 'API_KEY is not set' : apiKey === 'generate-a-random-key' ? 'API_KEY is default value' : 'API_KEY is set',
   })
 
-  const authPass = process.env.AUTH_PASS || ''
+  const adminCheck = checkAdminCredential()
   checks.push({
     name: 'Auth password secure',
-    pass: Boolean(authPass) && !INSECURE_PASSWORDS.has(authPass),
-    detail: !authPass ? 'AUTH_PASS is not set' : INSECURE_PASSWORDS.has(authPass) ? 'AUTH_PASS is a known insecure password' : 'AUTH_PASS is not a common default',
+    pass: adminCheck.status === 'pass',
+    detail: adminCheck.detail,
   })
 
   const allowedHosts = process.env.MC_ALLOWED_HOSTS || ''

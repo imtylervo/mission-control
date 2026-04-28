@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
+import { checkAdminCredential } from '@/lib/admin-credential-check'
 import { config } from '@/lib/config'
 import { getDatabase } from '@/lib/db'
 
@@ -162,15 +163,39 @@ function tryExecBatch(script: string): Record<string, string> {
 function scanCredentials(): Category {
   const checks: Check[] = []
 
-  const authPass = process.env.AUTH_PASS || ''
-  if (!authPass) {
-    checks.push({ id: 'auth_pass', name: 'Admin password configured', status: 'fail', detail: 'AUTH_PASS is not configured', fix: 'Set AUTH_PASS in .env to a strong password (12+ characters)', severity: 'critical' })
-  } else if (INSECURE_PASSWORDS.has(authPass)) {
-    checks.push({ id: 'auth_pass', name: 'Admin password strength', status: 'fail', detail: 'AUTH_PASS is set to a known insecure default', fix: 'Change AUTH_PASS to a unique password with 12+ characters', severity: 'critical' })
-  } else if (authPass.length < 12) {
-    checks.push({ id: 'auth_pass', name: 'Admin password strength', status: 'warn', detail: `AUTH_PASS is only ${authPass.length} characters`, fix: 'Use a password with at least 12 characters', severity: 'critical' })
+  const adminCheck = checkAdminCredential()
+  if (adminCheck.source === 'db') {
+    checks.push({
+      id: 'auth_pass',
+      name: 'Admin password strength',
+      status: adminCheck.status,
+      detail: adminCheck.detail,
+      fix: adminCheck.status === 'fail' ? 'Reset the admin password from the dashboard or via DELETE /api/auth/users.' : '',
+      severity: 'critical',
+    })
+  } else if (adminCheck.source === 'env') {
+    checks.push({
+      id: 'auth_pass',
+      name: 'Admin password strength',
+      status: adminCheck.status,
+      detail: adminCheck.detail,
+      fix:
+        adminCheck.status === 'fail'
+          ? 'Change AUTH_PASS to a unique password with 12+ characters before first run.'
+          : adminCheck.status === 'warn'
+            ? 'Use a password with at least 12 characters.'
+            : '',
+      severity: 'critical',
+    })
   } else {
-    checks.push({ id: 'auth_pass', name: 'Admin password strength', status: 'pass', detail: 'AUTH_PASS is a strong, non-default password', fix: '', severity: 'critical' })
+    checks.push({
+      id: 'auth_pass',
+      name: 'Admin password configured',
+      status: 'fail',
+      detail: adminCheck.detail,
+      fix: 'Set AUTH_PASS in .env to a strong password (12+ characters) so the first-run seed can create the admin user.',
+      severity: 'critical',
+    })
   }
 
   const apiKey = process.env.API_KEY || ''
