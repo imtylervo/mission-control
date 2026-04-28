@@ -19,6 +19,9 @@ import {
   readErrorDetailCode,
   NON_RETRYABLE_ERROR_CODES,
   shouldRetryWithoutDeviceIdentity,
+  readPairingApproval,
+  calculatePairingPollDelay,
+  type PendingApprovalState,
 } from '@/lib/websocket-utils'
 
 const log = createClientLogger('WebSocket')
@@ -63,6 +66,13 @@ const handshakeCompleteRef: { current: boolean } = { current: false }
 const reconnectAttemptsRef: { current: number } = { current: 0 }
 const manualDisconnectRef: { current: boolean } = { current: false }
 const nonRetryableErrorRef: { current: string | null } = { current: null }
+// PR-UI6: tracks "device pending operator approval" across the slow-poll
+// reconnect cycle. Set when the gateway returns PAIRING_REQUIRED, cleared on
+// handshake success or manual disconnect. While set, ws.onclose uses
+// `calculatePairingPollDelay` instead of exponential backoff and bypasses
+// both the path-fallback probe and the max-reconnect-attempts cap, because
+// the gateway is reachable + responsive — it's just waiting for a human.
+const pendingApprovalRef: { current: PendingApprovalState | null } = { current: null }
 const connectRef: { current: (url: string, token?: string) => void } = { current: () => {} }
 const lastWebSocketErrorRef: { current: { message: string; at: number } | null } = { current: null }
 const pingCounterRef: { current: number } = { current: 0 }
@@ -111,6 +121,28 @@ export function useWebSocket() {
       normalized.includes('auth rate limit') ||
       normalized.includes('rate limited')
     )
+  }, [])
+
+  const formatPairingApprovalHelp = useCallback((approval: PendingApprovalState): string => {
+    const reasonLabel = ((): string => {
+      switch (approval.reason) {
+        case 'role-upgrade':
+          return 'role upgrade'
+        case 'scope-upgrade':
+          return 'scope upgrade'
+        case 'metadata-upgrade':
+          return 'device metadata refresh'
+        case 'not-paired':
+        case null:
+        default:
+          return 'pairing'
+      }
+    })()
+    const idHint = approval.deviceId ? ` for device ${approval.deviceId.slice(0, 12)}…` : ''
+    const requestHint = approval.requestId
+      ? ` Run \`openclaw devices approve ${approval.requestId}\` on the gateway host to approve this request.`
+      : ' Run `openclaw devices list` on the gateway host to find the pending request id, then `openclaw devices approve <id>`.'
+    return `Gateway requires ${reasonLabel} approval${idHint}.${requestHint} The browser will reconnect automatically once the operator approves.`
   }, [])
 
   const getGatewayErrorHelp = useCallback((message: string): string => {
@@ -421,6 +453,11 @@ export function useWebSocket() {
       log.info('Handshake complete')
       handshakeCompleteRef.current = true
       reconnectAttemptsRef.current = 0
+      // PR-UI6: a successful handshake means either (a) the operator
+      // approved the pending pairing request, or (b) we never had one to
+      // begin with. Either way, drop the slow-poll state and hide the
+      // pending-approval banner.
+      pendingApprovalRef.current = null
       // Cache device token if returned by gateway
       if (frame.result?.deviceToken) {
         cacheDeviceToken(frame.result.deviceToken)
@@ -433,6 +470,8 @@ export function useWebSocket() {
         // handshake completes (we got past the post-PR-UI4 stable-failure
         // state).
         nonRetryableError: null,
+        // PR-UI6: clear the pending-approval banner too.
+        pendingApproval: null,
       })
       // Start heartbeat after successful handshake
       startHeartbeat()
@@ -456,6 +495,57 @@ export function useWebSocket() {
     if (frame.type === 'res' && !frame.ok) {
       log.error(`Gateway error: ${frame.error?.message || JSON.stringify(frame.error)}`)
       const rawMessage = frame.error?.message || JSON.stringify(frame.error)
+
+      // PR-UI6: PAIRING_REQUIRED is a SOFT failure — the gateway is reachable
+      // and responsive, but the operator hasn't approved this device yet.
+      // Surface a distinct UI state, switch the WS retry loop into slow-poll
+      // mode (see `pendingApprovalRef` + `calculatePairingPollDelay`), and
+      // close the socket so the existing onclose path schedules the next
+      // poll. We deliberately do NOT mark this as `nonRetryableErrorRef` —
+      // the whole point of the slow-poll cadence is that the connection
+      // recovers automatically when the operator approves, with no manual
+      // user click required (per Đào msg 1937 acceptance criteria).
+      const pairing = readPairingApproval(frame.error)
+      if (pairing) {
+        pendingApprovalRef.current = pairing
+        // Reset the exponential-backoff counter so that if/when the operator
+        // approves and we transition back to a normal flow (or, conversely,
+        // the gateway flips to a different error), we start fresh.
+        reconnectAttemptsRef.current = 0
+        const help = formatPairingApprovalHelp(pairing)
+        addLog({
+          // Stable id so a long pending state doesn't spam the log feed every
+          // poll attempt — a single entry is enough to communicate "still
+          // waiting".
+          id: `gateway-pairing-required-${pairing.requestId ?? pairing.deviceId ?? 'pending'}`,
+          timestamp: Date.now(),
+          level: 'warn',
+          source: 'gateway',
+          message: `Gateway pairing approval pending: ${help}`,
+        })
+        setConnection({
+          isConnected: false,
+          pendingApproval: pairing,
+          // Make sure a stale non-retryable marker from a prior failure
+          // doesn't keep the device-identity recovery banner up alongside
+          // this banner (they would be confusing together).
+          nonRetryableError: null,
+          reconnectAttempts: 0,
+        })
+        stopHeartbeat()
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          // Gateway will close 1008 immediately after this res frame anyway;
+          // do it locally too so onclose fires deterministically and the
+          // slow-poll retry kicks in without waiting for the gateway's close.
+          try {
+            ws.close(4003, 'pairing-required')
+          } catch {
+            // already closed; onclose will fire from the gateway side.
+          }
+        }
+        return
+      }
+
       const help = getGatewayErrorHelp(rawMessage)
       const shouldFallbackToTokenOnly = shouldRetryWithoutDeviceIdentity(
         rawMessage,
@@ -687,6 +777,7 @@ export function useWebSocket() {
     stopHeartbeat,
     isNonRetryableGatewayError,
     getGatewayErrorHelp,
+    formatPairingApprovalHelp,
     addExecApproval,
     updateExecApproval,
   ])
@@ -781,6 +872,22 @@ export function useWebSocket() {
 
         // Skip auto-reconnect if this was a manual disconnect
         if (manualDisconnectRef.current) return
+
+        // PR-UI6: while in PAIRING_REQUIRED slow-poll mode, the gateway is
+        // reachable + responsive — it's just waiting for an operator. Use a
+        // steady ~10s cadence (no exponential backoff, no max-attempts cap,
+        // no path fallback). The next poll attempt's handshake will succeed
+        // as soon as `openclaw devices approve <requestId>` lands on the
+        // gateway host, and that will drop pendingApprovalRef via the
+        // handshake-success branch above.
+        if (pendingApprovalRef.current) {
+          const delay = calculatePairingPollDelay()
+          log.info(`Pending operator approval — re-polling gateway in ${delay}ms`)
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connectRef.current(reconnectUrl.current, authTokenRef.current)
+          }, delay)
+          return
+        }
 
         // If the initial handshake never completed and the URL is root-only,
         // try common reverse-proxy websocket paths before exponential backoff.
@@ -883,6 +990,12 @@ export function useWebSocket() {
     manualDisconnectRef.current = true
     reconnectAttemptsRef.current = 0
     wsPathFallbackTriedRef.current.clear()
+    // PR-UI6: explicit disconnect clears the pending-approval slow-poll
+    // state so the banner doesn't linger across the user's intentional
+    // teardown. Auto-reconnect from inside the slow-poll loop never goes
+    // through here — it calls connectRef directly — so the state survives
+    // the retry cycle as intended.
+    pendingApprovalRef.current = null
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
@@ -900,7 +1013,8 @@ export function useWebSocket() {
     setConnection({
       isConnected: false,
       reconnectAttempts: 0,
-      latency: undefined
+      latency: undefined,
+      pendingApproval: null,
     })
   }, [setConnection, stopHeartbeat])
 
