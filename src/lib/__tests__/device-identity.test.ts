@@ -257,6 +257,52 @@ describe('device-identity (PR #574 hardening)', () => {
         DeviceIdentityUnavailableError
       )
     })
+
+    it(
+      'PR-UI4 Option E: when localStorage advertises a paired identity but ' +
+        'IndexedDB readback returns null/timeout (no legacy privkey present), ' +
+        'throws DeviceIdentityUnavailableError instead of auto-regenerating',
+      async () => {
+        // Simulate the Firefox / Camofox `store.load()` hang + timeout-race
+        // outcome: localStorage has the deviceId/pubKey markers from a
+        // previous successful pair, but the IDB lookup never produces the
+        // CryptoKey. Without Option E, the code path silently regenerates a
+        // fresh keypair on every reconnect ("pairing storm"); Option E surfaces
+        // the unrecoverable state so the WS layer can stop retrying.
+        const lyingStore: DeviceIdentityStore = {
+          async store() {
+            /* not exercised in this test */
+          },
+          async load() {
+            return null
+          },
+          async clear() {
+            /* noop */
+          },
+        }
+        __setDeviceIdentityStoreForTests(lyingStore)
+
+        // Seed the markers that signal "previously paired" without the
+        // legacy PKCS8 blob (post-#574 happy path: only deviceId+pubKey).
+        const fakeDeviceId =
+          'a0055965b0e6d297d775b21940add7fe473dc56aea4187d40888e3445f5d628b'
+        const fakePub = 'MdmypPpUBKSUqikhyZil3ke4pU5dySDvKkIjSM1JuvE'
+        localStorage.setItem(STORAGE_DEVICE_ID, fakeDeviceId)
+        localStorage.setItem(STORAGE_PUBKEY, fakePub)
+        // NB: STORAGE_PRIVKEY_LEGACY intentionally NOT set.
+
+        await expect(getOrCreateDeviceIdentity()).rejects.toBeInstanceOf(
+          DeviceIdentityUnavailableError,
+        )
+
+        // Core assertion: the existing markers MUST stay intact. Auto-clear
+        // here would let the next reconnect call generateNewIdentity, mint a
+        // brand-new deviceId, and trigger another pairing request — the
+        // pairing-storm Đào msg 1922 explicitly rejected.
+        expect(localStorage.getItem(STORAGE_DEVICE_ID)).toBe(fakeDeviceId)
+        expect(localStorage.getItem(STORAGE_PUBKEY)).toBe(fakePub)
+      },
+    )
   })
 
   describe('clearDeviceIdentity', () => {

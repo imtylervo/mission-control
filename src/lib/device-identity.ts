@@ -312,16 +312,24 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
     storedPub &&
     !localStorage.getItem(STORAGE_PRIVKEY_LEGACY)
   ) {
-    // localStorage advertises a paired identity but IDB read didn't return it
-    // in time. Drop the stale localStorage markers so the regenerate branch
-    // doesn't pick up a half-state (deviceId from old key + pubKey from old
-    // key, but no signing privateKey).
+    // localStorage advertises a paired identity (`mc-device-id` +
+    // `mc-device-pubkey` set) but the IndexedDB read didn't return the key in
+    // time. This is the signature of the Firefox/Camofox `store.load()` hang
+    // hitting a previously-stored CryptoKey: the markers are real, the
+    // private key cannot be reached, and silently regenerating a fresh
+    // keypair here would create a brand-new `deviceId` on every reconnect —
+    // the gateway sees a stream of distinct pairing requests it can never
+    // approve fast enough ("pairing storm"). That is strictly worse than
+    // surfacing the unrecoverable state.
     //
-    // Skip this cleanup when legacy `mc-device-privkey` is present — the
-    // migration branch below will use those markers to migrate the legacy
-    // PKCS8 key into IndexedDB.
-    localStorage.removeItem(STORAGE_DEVICE_ID)
-    localStorage.removeItem(STORAGE_PUBKEY)
+    // Per Đào msg 1922: Option E. Throw `DeviceIdentityUnavailableError`
+    // here so the caller (sendConnectHandshake) can stop the WS retry loop
+    // and the UI can surface a "re-pair required" signal. Regeneration is
+    // gated to an explicit reset flow (clearDeviceIdentity → reload), not
+    // an automatic side-effect of reconnect.
+    throw new DeviceIdentityUnavailableError(
+      'localStorage has a paired deviceId but IndexedDB readback timed out — this browser needs to re-pair manually before the WebSocket can authenticate.',
+    )
   }
 
   // 2. Legacy localStorage key → migrate.
