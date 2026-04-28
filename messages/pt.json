@@ -840,7 +840,8 @@
     "submit": "Enviar",
     "loadingTranscript": "Carregando transcrição...",
     "noSessionMessages": "Sem mensagens de sessão",
-    "dunkIt": "Concluir"
+    "dunkIt": "Concluir",
+    "loadingTasks": "Carregando tarefas…"
   },
   "cronManagement": {
     "title": "Gerenciamento de cron",

@@ -840,7 +840,8 @@
     "submit": "إرسال",
     "loadingTranscript": "جارٍ تحميل النص...",
     "noSessionMessages": "لا توجد رسائل جلسة",
-    "dunkIt": "أنجزها"
+    "dunkIt": "أنجزها",
+    "loadingTasks": "جارٍ تحميل المهام…"
   },
   "cronManagement": {
     "title": "إدارة Cron",

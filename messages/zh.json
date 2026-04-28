@@ -1080,7 +1080,8 @@
     "submit": "提交",
     "loadingTranscript": "加载记录中...",
     "noSessionMessages": "无会话消息",
-    "dunkIt": "完成"
+    "dunkIt": "完成",
+    "loadingTasks": "正在加载任务…"
   },
   "cronManagement": {
     "title": "定时任务管理",

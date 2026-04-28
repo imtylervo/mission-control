@@ -840,7 +840,8 @@
     "submit": "送信",
     "loadingTranscript": "トランスクリプトを読み込み中...",
     "noSessionMessages": "セッションメッセージなし",
-    "dunkIt": "完了"
+    "dunkIt": "完了",
+    "loadingTasks": "タスクを読み込み中…"
   },
   "cronManagement": {
     "title": "Cron管理",

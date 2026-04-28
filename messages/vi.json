@@ -840,7 +840,8 @@
     "submit": "Submit",
     "loadingTranscript": "Loading transcript...",
     "noSessionMessages": "No session messages",
-    "dunkIt": "Dunk It"
+    "dunkIt": "Dunk It",
+    "loadingTasks": "Đang tải task..."
   },
   "cronManagement": {
     "title": "Cron Management",
