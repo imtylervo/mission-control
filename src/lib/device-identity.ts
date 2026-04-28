@@ -128,13 +128,44 @@ async function generateNewIdentity(
   const deviceId = await sha256Hex(pubRaw)
   const publicKeyBase64 = toBase64Url(pubRaw)
 
+  // Verify the freshly-generated key can sign before persisting.
   await verifySignRoundtrip(keyPair.privateKey)
-  await store.store(keyPair.privateKey)
-  const reload = await store.load()
-  if (!reload) {
-    throw new DeviceIdentityUnavailableError('verify-read returned null')
+
+  // Persist to IndexedDB so subsequent cold starts can reload via the
+  // precedence-1 fast-path. Failures here are surfaced as
+  // DeviceIdentityUnavailableError (re-pair signal) since IndexedDB is the
+  // canonical post-#574 home for the private key.
+  try {
+    await store.store(keyPair.privateKey)
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError(
+      `IndexedDB store failed (${(err as Error)?.message || 'unknown'})`,
+    )
   }
-  await verifySignRoundtrip(reload)
+
+  // Phase 2.1-followup: do NOT do an immediate readback-verify roundtrip on
+  // the same key we just generated.
+  //
+  // Rationale: a `store.load()` issued microtasks after `store.store()` has
+  // been observed to hang (Promise never resolves, await never returns) on
+  // Firefox 135 / Camofox in the mc.aothundao.com origin. The hang propagates
+  // up through `getOrCreateDeviceIdentity` → `sendConnectHandshake`'s `await`,
+  // so the WS handshake reply is never sent and the gateway closes the
+  // connection with a handshake-timeout. Net effect for the user: dashboard
+  // stays at "Gateway disconnected" forever even though `voicecall` /
+  // `sessions.list` over the SAME WS work fine for the MC server-side
+  // connection. See docs/audit/PHASE_2_1_FOLLOWUP_DEVICE_IDENTITY.md and
+  // gateway log evidence with `code=1000 reason=n/a` from origin
+  // `https://mc.aothundao.com`.
+  //
+  // The freshly-generated `keyPair.privateKey` has already passed
+  // `verifySignRoundtrip` above, so we already know it can sign — we don't
+  // need to round-trip through IndexedDB to prove it again. The persisted
+  // copy IS exercised on every subsequent cold start via the precedence-1
+  // fast-path in `getOrCreateDeviceIdentity` (load-then-validate-by-using),
+  // so a corrupt persistence will surface there with a real failure (sign
+  // throws when called for a real handshake) rather than during the create
+  // path that is currently hanging.
 
   localStorage.setItem(STORAGE_DEVICE_ID, deviceId)
   localStorage.setItem(STORAGE_PUBKEY, publicKeyBase64)
@@ -142,7 +173,7 @@ async function generateNewIdentity(
   return {
     deviceId,
     publicKeyBase64,
-    privateKey: reload,
+    privateKey: keyPair.privateKey,
   }
 }
 
