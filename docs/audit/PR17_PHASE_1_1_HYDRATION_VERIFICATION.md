@@ -1,22 +1,20 @@
 # Phase 1.1 — Hydration nonce mismatch verification harness
 
-**Status:** harness ready, **PENDING dashboard auth** before final close. See "How to run" below; once `/tmp/mc-admin-pass.rotated` (or an equivalent credential) is available again, the harness produces the evidence needed to mark Phase 1.1 ✅ complete or to escalate to Option D.
+**Status:** ✅ **Phase 1.1 fully closed.** Harness ran on 2026-04-28 against the live dev server with a rotated admin credential and produced verdict `NO_HYDRATION_WARNING` (`hydration_event_count: 0`). See "Result" section below for the verbatim evidence JSON.
 
-**Snapshot date:** 2026-04-27 (HEAD of `phase-2/pr17-1-1-hydration-verification`, branched from `phase-0/baseline-audit`).
+**Snapshot date:** 2026-04-27 (harness landed) → 2026-04-28 (close-out evidence appended).
 
 ## Why this PR exists
 
 PR #15 (Option A — `suppressHydrationWarning` on the inline bootstrap `<script>` in `src/app/layout.tsx`) closed the SSR-side fix per Đào msg 1344. PR #15 also explicitly noted in its test plan that the **dashboard `/` route was not directly reproduced**, because that route requires admin authentication and the time-boxed window did not include credential plumbing.
 
-This PR adds a reproducible Chromium harness that exercises the dashboard route once a credential is available, mirroring the PR #16 instrumentation pattern.
-
-The harness is checked in **without running it** because the temporary admin credential file (`/tmp/mc-admin-pass.rotated`, used by PR #16) was rotated/cleaned afterwards and is no longer present on the box. Re-running once the credential is back in place will produce the JSON evidence document for the close-out comment.
+This PR adds a reproducible Chromium harness that exercises the dashboard route, mirroring the PR #16 instrumentation pattern, and (in the close-out commit dated 2026-04-28) ran it with a rotated admin credential to produce the evidence JSON below.
 
 ## What changed
 
 - New: `docs/audit/scripts/pr17-mc-1-1-hydration-verification.js` — Chromium + Playwright `addInitScript` pre-page wrapper. Captures every `console.warn` / `console.error` event on the dashboard route and tags hydration-mismatch banners (`hydrated`, `did not match`, `Hydration failed`, `server rendered HTML didn't match`). Records also the meta CSP header (if any) and the per-script `nonce` length, never the value.
 - New: this audit doc.
-- Roadmap update only — `docs/audit/MISSION_CONTROL_ROADMAP.md` row 1.1 gains a "PENDING dashboard auth" status tag so the next reviewer can see at a glance that the close-out evidence is one command away rather than an open question. `docs/audit/MISSION_CONTROL_BASELINE.md` is intentionally NOT touched in this PR; the baseline reclassification waits for the harness verdict in the close-out commit.
+- Roadmap + baseline updates — `docs/audit/MISSION_CONTROL_ROADMAP.md` row 1.1 marked closed via PR #15 + PR #17 (verdict `NO_HYDRATION_WARNING`). `docs/audit/MISSION_CONTROL_BASELINE.md` hydration row reclassified **RESOLVED** with the same evidence. `docs/audit/PHASE_AUDIT_SUMMARY.md` row 1.1 + `docs/audit/PHASE_6_3_FINAL_ACCEPTANCE.md` residual #5 swept to final-state wording in this same close-out commit.
 
 **No `src/` code is modified.**
 

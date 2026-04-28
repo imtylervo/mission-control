@@ -14,7 +14,7 @@ The phase numbers match `docs/audit/MISSION_CONTROL_ROADMAP.md`. A phase that do
 
 | Phase | Audit doc | Summary |
 | --- | --- | --- |
-| 1.1 | core fix in PR #15 (merged); dashboard-route harness pending in [PR #17](https://github.com/imtylervo/mission-control/pull/17) (OPEN draft, 2/7 test-plan done) | Hydration nonce mismatch — `suppressHydrationWarning` on the inline bootstrap `<script>` in `src/app/layout.tsx`. Verified on `/login` `/setup` `/docs` via curl in PR #15. Dashboard `/` route harness in PR #17 awaiting admin auth credential / Playwright `MC_STORAGE_STATE_FILE`. **Core fix closed; dashboard verification pending.** |
+| 1.1 | core fix in PR #15 (merged) + dashboard verification in [PR #17](https://github.com/imtylervo/mission-control/pull/17) (Result: `NO_HYDRATION_WARNING`) | Hydration nonce mismatch — `suppressHydrationWarning` on the inline bootstrap `<script>` in `src/app/layout.tsx`. Verified on `/login` `/setup` `/docs` via curl in PR #15. Dashboard `/` route harness in PR #17 produced verdict `NO_HYDRATION_WARNING` (`hydration_event_count: 0` on `/`) on 2026-04-28. **Phase 1.1 fully closed.** |
 | 1.5 | [PR16_PHASE_1_5_LEGACY_MIGRATION_VERIFICATION.md](PR16_PHASE_1_5_LEGACY_MIGRATION_VERIFICATION.md) | #574 legacy localStorage migration verified on Chromium |
 | 1.6 | [PR18_DEVICE_TOKEN_BEARER_CLASSIFICATION.md](PR18_DEVICE_TOKEN_BEARER_CLASSIFICATION.md) | `mc-device-token` classified as bearer-equivalent on the gateway |
 | 1.7 | [PR19_PHASE_1_7_DEVICE_TOKEN_SESSIONSTORAGE.md](PR19_PHASE_1_7_DEVICE_TOKEN_SESSIONSTORAGE.md) | `mc-device-token` migrated to `sessionStorage` (XSS-exfil hardening) |
