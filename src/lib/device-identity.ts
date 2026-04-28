@@ -128,13 +128,44 @@ async function generateNewIdentity(
   const deviceId = await sha256Hex(pubRaw)
   const publicKeyBase64 = toBase64Url(pubRaw)
 
+  // Verify the freshly-generated key can sign before persisting.
   await verifySignRoundtrip(keyPair.privateKey)
-  await store.store(keyPair.privateKey)
-  const reload = await store.load()
-  if (!reload) {
-    throw new DeviceIdentityUnavailableError('verify-read returned null')
+
+  // Persist to IndexedDB so subsequent cold starts can reload via the
+  // precedence-1 fast-path. Failures here are surfaced as
+  // DeviceIdentityUnavailableError (re-pair signal) since IndexedDB is the
+  // canonical post-#574 home for the private key.
+  try {
+    await store.store(keyPair.privateKey)
+  } catch (err) {
+    throw new DeviceIdentityUnavailableError(
+      `IndexedDB store failed (${(err as Error)?.message || 'unknown'})`,
+    )
   }
-  await verifySignRoundtrip(reload)
+
+  // Phase 2.1-followup: do NOT do an immediate readback-verify roundtrip on
+  // the same key we just generated.
+  //
+  // Rationale: a `store.load()` issued microtasks after `store.store()` has
+  // been observed to hang (Promise never resolves, await never returns) on
+  // Firefox 135 / Camofox in the mc.aothundao.com origin. The hang propagates
+  // up through `getOrCreateDeviceIdentity` → `sendConnectHandshake`'s `await`,
+  // so the WS handshake reply is never sent and the gateway closes the
+  // connection with a handshake-timeout. Net effect for the user: dashboard
+  // stays at "Gateway disconnected" forever even though `voicecall` /
+  // `sessions.list` over the SAME WS work fine for the MC server-side
+  // connection. See docs/audit/PHASE_2_1_FOLLOWUP_DEVICE_IDENTITY.md and
+  // gateway log evidence with `code=1000 reason=n/a` from origin
+  // `https://mc.aothundao.com`.
+  //
+  // The freshly-generated `keyPair.privateKey` has already passed
+  // `verifySignRoundtrip` above, so we already know it can sign — we don't
+  // need to round-trip through IndexedDB to prove it again. The persisted
+  // copy IS exercised on every subsequent cold start via the precedence-1
+  // fast-path in `getOrCreateDeviceIdentity` (load-then-validate-by-using),
+  // so a corrupt persistence will surface there with a real failure (sign
+  // throws when called for a real handshake) rather than during the create
+  // path that is currently hanging.
 
   localStorage.setItem(STORAGE_DEVICE_ID, deviceId)
   localStorage.setItem(STORAGE_PUBKEY, publicKeyBase64)
@@ -142,7 +173,7 @@ async function generateNewIdentity(
   return {
     deviceId,
     publicKeyBase64,
-    privateKey: reload,
+    privateKey: keyPair.privateKey,
   }
 }
 
@@ -246,9 +277,25 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
   const storedPub = localStorage.getItem(STORAGE_PUBKEY)
 
   // 1. IndexedDB has the key → fast path.
+  //
+  // Phase 2.1-followup PR-UI4: race the IDB read against a 2s timeout. Same
+  // Firefox / Camofox hang that affected the post-store readback in
+  // generateNewIdentity also hits this fast-path read on subsequent loads.
+  // When `store.load()` never resolves, the await here blocks
+  // sendConnectHandshake forever, the gateway times out the WS handshake
+  // window, and the dashboard cycles between code=1000 / code=1006 close
+  // events without ever reaching `connect.handshake`.
+  //
+  // Treating a 2s no-resolve as "no key in IDB" means the next branch
+  // regenerates a fresh keypair. The user pays a re-pair (one-time per
+  // session affected) but the dashboard actually connects, which is
+  // strictly better than an indefinite "Gateway disconnected" loop.
   let idbKey: CryptoKey | null = null
   try {
-    idbKey = await store.load()
+    idbKey = await Promise.race([
+      store.load(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+    ])
   } catch (err) {
     log.warn('IndexedDB read failed, falling through to migration / fresh keypair')
   }
@@ -258,6 +305,31 @@ export async function getOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
       publicKeyBase64: storedPub,
       privateKey: idbKey,
     }
+  }
+  if (
+    !idbKey &&
+    storedId &&
+    storedPub &&
+    !localStorage.getItem(STORAGE_PRIVKEY_LEGACY)
+  ) {
+    // localStorage advertises a paired identity (`mc-device-id` +
+    // `mc-device-pubkey` set) but the IndexedDB read didn't return the key in
+    // time. This is the signature of the Firefox/Camofox `store.load()` hang
+    // hitting a previously-stored CryptoKey: the markers are real, the
+    // private key cannot be reached, and silently regenerating a fresh
+    // keypair here would create a brand-new `deviceId` on every reconnect —
+    // the gateway sees a stream of distinct pairing requests it can never
+    // approve fast enough ("pairing storm"). That is strictly worse than
+    // surfacing the unrecoverable state.
+    //
+    // Per Đào msg 1922: Option E. Throw `DeviceIdentityUnavailableError`
+    // here so the caller (sendConnectHandshake) can stop the WS retry loop
+    // and the UI can surface a "re-pair required" signal. Regeneration is
+    // gated to an explicit reset flow (clearDeviceIdentity → reload), not
+    // an automatic side-effect of reconnect.
+    throw new DeviceIdentityUnavailableError(
+      'localStorage has a paired deviceId but IndexedDB readback timed out — this browser needs to re-pair manually before the WebSocket can authenticate.',
+    )
   }
 
   // 2. Legacy localStorage key → migrate.

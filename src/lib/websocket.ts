@@ -269,9 +269,24 @@ export function useWebSocket() {
             source: 'gateway',
             message: err.message,
           })
-        } else {
-          log.warn('Device identity unavailable, proceeding without:', err)
+          // Phase 2.1-followup PR-UI4 v3 (Option E per Đào msg 1922): stop the
+          // WS retry loop instead of silently downgrading to a token-only
+          // handshake. Sending a handshake without device proof here would
+          // get rejected by the gateway with `code=1008 control ui requires
+          // device identity` and the onclose handler would just queue another
+          // retry — over and over, which is the "pairing storm" pattern.
+          // Mark non-retryable + close the socket so the user gets a single
+          // stable failure they can resolve via clearDeviceIdentity + re-pair,
+          // rather than an indefinite reconnect loop racing the gateway.
+          nonRetryableErrorRef.current = err.message
+          try {
+            ws.close(4001, 'device-identity-unavailable')
+          } catch {
+            // socket already closed; onclose will fire from the original cause.
+          }
+          return
         }
+        log.warn('Device identity unavailable, proceeding without:', err)
       }
     }
 
