@@ -840,7 +840,8 @@
     "submit": "Einreichen",
     "loadingTranscript": "Transkript laden...",
     "noSessionMessages": "Keine Sitzungsnachrichten",
-    "dunkIt": "Erledigen"
+    "dunkIt": "Erledigen",
+    "loadingTasks": "Aufgaben werden geladen…"
   },
   "cronManagement": {
     "title": "Cron-Verwaltung",

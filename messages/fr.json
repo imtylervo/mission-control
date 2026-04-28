@@ -840,7 +840,8 @@
     "submit": "Soumettre",
     "loadingTranscript": "Chargement de la transcription...",
     "noSessionMessages": "Aucun message de session",
-    "dunkIt": "Terminer"
+    "dunkIt": "Terminer",
+    "loadingTasks": "Chargement des tâches…"
   },
   "cronManagement": {
     "title": "Gestion des crons",

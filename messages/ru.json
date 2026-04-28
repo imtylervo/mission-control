@@ -840,7 +840,8 @@
     "submit": "Отправить",
     "loadingTranscript": "Загрузка транскрипта...",
     "noSessionMessages": "Нет сообщений сессии",
-    "dunkIt": "Завершить"
+    "dunkIt": "Завершить",
+    "loadingTasks": "Загрузка задач…"
   },
   "cronManagement": {
     "title": "Управление cron",
